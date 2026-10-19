@@ -285,6 +285,148 @@ function getZone(rsi: number): string {
   return 'oversold';
 }
 
+export interface SmcZone {
+  type: 'BULLISH_OB' | 'BEARISH_OB' | 'BULLISH_FVG' | 'BEARISH_FVG';
+  top: number;
+  bottom: number;
+  mid: number;
+  isInside: boolean;
+  distancePct: number;
+  penetrationPct: number;
+  hasFvg: boolean;
+  candleIndex?: number;
+}
+
+export interface SmcResult {
+  activeZones: SmcZone[];
+  nearestBullish?: SmcZone;
+  nearestBearish?: SmcZone;
+}
+
+function detectSMC(klines: any[], minGapPct: number = 0.2): SmcResult {
+  if (!klines || !Array.isArray(klines) || klines.length < 5) {
+    return { activeZones: [] };
+  }
+
+  const count = klines.length;
+  const opens = klines.map((k: any) => parseFloat(k[1]));
+  const highs = klines.map((k: any) => parseFloat(k[2]));
+  const lows = klines.map((k: any) => parseFloat(k[3]));
+  const closes = klines.map((k: any) => parseFloat(k[4]));
+
+  const currentPrice = closes[count - 1];
+
+  let activeBullishZones: SmcZone[] = [];
+  let activeBearishZones: SmcZone[] = [];
+
+  // Etapa 1: Mapeamento da Janela de 3 Candles (cronológico de 2 até o último candle)
+  for (let i = 2; i < count; i++) {
+    // Candle [i]: Candle atual/confirmação
+    // Candle [i-1]: Candle do meio (impulsão)
+    // Candle [i-2]: Candle base (origem do movimento e onde o OB é marcado)
+
+    // Etapa 2: Regra de Formação OB+ (Demanda / Sinal Verde)
+    // 1. Validação do FVG: mínima do candle atual > máxima do candle base E candle do meio de alta
+    const isBullFvg = lows[i] > highs[i - 2] && closes[i - 1] > opens[i - 1];
+    // 2. Filtro de Tamanho Mínimo (%): ((Candle[0].Low - Candle[2].High) / Candle[2].High) * 100 >= 0.2
+    const bullGapPct = highs[i - 2] > 0 ? ((lows[i] - highs[i - 2]) / highs[i - 2]) * 100 : 0;
+    // 3. Filtro do Order Block (Candle Contrário): Candle[2] obrigatoriamente de baixa/negativo
+    const isBullBaseBearish = closes[i - 2] < opens[i - 2];
+
+    if (isBullFvg && bullGapPct >= minGapPct && isBullBaseBearish) {
+      activeBullishZones.push({
+        type: 'BULLISH_OB',
+        top: highs[i - 2],
+        bottom: lows[i - 2],
+        mid: (highs[i - 2] + lows[i - 2]) / 2,
+        isInside: false,
+        distancePct: 0,
+        penetrationPct: 0,
+        hasFvg: true,
+        candleIndex: i - 2
+      });
+    }
+
+    // Etapa 3: Regra de Formação OB- (Oferta / Sinal Vermelho)
+    // 1. Validação do FVG: máxima do candle atual < mínima do candle base E candle do meio de baixa
+    const isBearFvg = highs[i] < lows[i - 2] && closes[i - 1] < opens[i - 1];
+    // 2. Filtro de Tamanho Mínimo (%): ((Candle[2].Low - Candle[0].High) / Candle[2].Low) * 100 >= 0.2
+    const bearGapPct = lows[i - 2] > 0 ? ((lows[i - 2] - highs[i]) / lows[i - 2]) * 100 : 0;
+    // 3. Filtro do Order Block (Candle Contrário): Candle[2] obrigatoriamente de alta/positivo
+    const isBearBaseBullish = closes[i - 2] > opens[i - 2];
+
+    if (isBearFvg && bearGapPct >= minGapPct && isBearBaseBullish) {
+      activeBearishZones.push({
+        type: 'BEARISH_OB',
+        top: highs[i - 2],
+        bottom: lows[i - 2],
+        mid: (highs[i - 2] + lows[i - 2]) / 2,
+        isInside: false,
+        distancePct: 0,
+        penetrationPct: 0,
+        hasFvg: true,
+        candleIndex: i - 2
+      });
+    }
+
+    // Etapa 5: Lógica de Mitigação (Invalidação e Limpeza)
+    // Destruição do OB+: Se em qualquer momento a mínima do preço rasgar o fundo da zona de demanda (Current_Low <= Limite_Inferior_OB)
+    activeBullishZones = activeBullishZones.filter(z => {
+      if (z.candleIndex !== undefined && z.candleIndex >= i - 2) return true; // Formado no trio recente
+      return lows[i] > z.bottom;
+    });
+
+    // Destruição do OB-: Se a máxima do preço rasgar o topo da zona de oferta (Current_High >= Limite_Superior_OB)
+    activeBearishZones = activeBearishZones.filter(z => {
+      if (z.candleIndex !== undefined && z.candleIndex >= i - 2) return true;
+      return highs[i] < z.top;
+    });
+  }
+
+  // Mitigação final pelo preço atual
+  activeBullishZones = activeBullishZones.filter(z => currentPrice >= z.bottom);
+  activeBearishZones = activeBearishZones.filter(z => currentPrice <= z.top);
+
+  // Etapa 4: Lógica de Radar (Ativação das Tags no Painel)
+  for (const z of activeBullishZones) {
+    // Acender tag "OB+" (Demanda): Se Preço_Atual <= Limite_Superior_OB e Preço_Atual >= Limite_Inferior_OB
+    z.isInside = currentPrice <= z.top && currentPrice >= z.bottom;
+    if (z.isInside) {
+      z.distancePct = 0;
+      z.penetrationPct = z.top > z.bottom ? Math.round(((z.top - currentPrice) / (z.top - z.bottom)) * 100) : 0;
+    } else {
+      z.distancePct = currentPrice > z.top 
+        ? ((currentPrice - z.top) / currentPrice) * 100 
+        : ((z.bottom - currentPrice) / currentPrice) * 100;
+    }
+  }
+
+  for (const z of activeBearishZones) {
+    // Acender tag "OB-" (Oferta): Se Preço_Atual >= Limite_Inferior_OB e Preço_Atual <= Limite_Superior_OB
+    z.isInside = currentPrice >= z.bottom && currentPrice <= z.top;
+    if (z.isInside) {
+      z.distancePct = 0;
+      z.penetrationPct = z.top > z.bottom ? Math.round(((currentPrice - z.bottom) / (z.top - z.bottom)) * 100) : 0;
+    } else {
+      z.distancePct = currentPrice < z.bottom 
+        ? ((z.bottom - currentPrice) / currentPrice) * 100 
+        : ((currentPrice - z.top) / currentPrice) * 100;
+    }
+  }
+
+  const allActive = [...activeBullishZones, ...activeBearishZones];
+  const insideZones = allActive.filter(z => z.isInside);
+
+  activeBullishZones.sort((a, b) => a.distancePct - b.distancePct);
+  activeBearishZones.sort((a, b) => a.distancePct - b.distancePct);
+
+  return {
+    activeZones: insideZones.length > 0 ? insideZones : allActive,
+    nearestBullish: activeBullishZones[0],
+    nearestBearish: activeBearishZones[0]
+  };
+}
+
 app.get('/api/crypto-rsi', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit as string) || 100;
@@ -464,7 +606,8 @@ app.get('/api/crypto-rsi', async (req, res) => {
               priceChange: parseFloat(priceChange.toFixed(2)),
               zone: getZone(rsi),
               rank: coin.rank,
-              leverage: futuresLeverage?.get(ticker) || null
+              leverage: futuresLeverage?.get(ticker) || null,
+              smc: detectSMC(klines)
             };
           }
         } catch (error: any) {

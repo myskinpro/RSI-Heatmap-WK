@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceArea, ReferenceLine, Cell, ZAxis, BarChart, Bar } from 'recharts';
+import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceArea, ReferenceLine, Cell, ZAxis } from 'recharts';
 import { RefreshCw, TrendingUp, ChevronUp, ChevronDown, BarChart2, HelpCircle, User, X, Pin } from 'lucide-react';
 import axios from 'axios';
 import { CoinHistoryModal } from './components/CoinHistoryModal';
@@ -9,6 +9,7 @@ import Evolution from './components/Evolution';
 import RiskCalculator from './components/RiskCalculator';
 import TradeJournal from './components/TradeJournal';
 import Strategy from './components/Strategy';
+import { OrderBlockRadar } from './components/OrderBlockRadar';
 
 interface CryptoData {
   id: string;
@@ -31,6 +32,7 @@ interface CryptoData {
   rank: number;
   leverage?: number | null;
   emaCross?: 'up' | 'down' | 'bullish' | 'bearish' | 'none';
+  smc?: any;
 }
 
 const ZONES = [
@@ -109,8 +111,6 @@ export default function App() {
       setMultiSortOrder(column === 'marketCap' || column === 'timeframe' ? 'desc' : 'asc');
     }
   };
-  const [showBar, setShowBar] = useState(true);
-  const [showKairiBar, setShowKairiBar] = useState(true);
   const [showTable, setShowTable] = useState(true);
   const [activeTab, setActiveTab] = useState<'heatmap' | 'dashboard' | 'irpf' | 'evolution' | 'risk' | 'journal' | 'strategy'>('heatmap');
   
@@ -219,13 +219,6 @@ export default function App() {
       </text>
     );
   };
-
-  const kairiData = useMemo(() => {
-    return data.map(coin => ({
-      ...coin,
-      kairi: multiData[coin.ticker]?.['4h']?.kairi ?? coin.kairi
-    }));
-  }, [data, multiData]);
 
   return (
     <div className="min-h-screen bg-bg text-text-main font-sans flex flex-col">
@@ -405,148 +398,6 @@ export default function App() {
         </ResponsiveContainer>
         </div>
         </>
-        )}
-      </div>
-
-      <div className={`flex-none w-full bg-surface rounded-xl border border-border p-4 flex flex-col mb-4 transition-all ${showBar ? 'h-[300px]' : ''}`}>
-        <div className="flex items-center justify-between mb-2">
-          <h2 className="text-sm font-bold text-text-dim uppercase tracking-wider flex items-center gap-2">
-            Candle Size (% Change) - {timeframe}
-          </h2>
-          <div className="flex items-center gap-4 text-[10px]">
-            <div className="flex items-center gap-1">
-              <div className="w-2 h-2 rounded-full bg-[#10B981]"></div>
-              <span>Positive</span>
-            </div>
-            <div className="flex items-center gap-1">
-              <div className="w-2 h-2 rounded-full bg-[#EF4444]"></div>
-              <span>Negative</span>
-            </div>
-            <button onClick={() => setShowBar(!showBar)} className="p-1 hover:bg-surface-light rounded transition-colors text-text-dim ml-2">
-              {showBar ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-            </button>
-          </div>
-        </div>
-        {showBar && (
-        <div className="flex-1">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={data} margin={{ top: 10, right: 10, bottom: 40, left: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" vertical={false} />
-              <XAxis 
-                dataKey="ticker" 
-                angle={-45} 
-                textAnchor="end" 
-                interval={0} 
-                tick={{ fill: 'var(--color-text-dim)', fontSize: 8, fontFamily: 'var(--font-mono)' }}
-                axisLine={{ stroke: 'var(--color-border)' }}
-              />
-              <YAxis 
-                label={{ value: '%', position: 'insideLeft', fill: 'var(--color-text-dim)', fontSize: 10 }}
-                tick={{ fill: 'var(--color-text-dim)', fontSize: 10, fontFamily: 'var(--font-mono)' }}
-                axisLine={{ stroke: 'var(--color-border)' }}
-              />
-              <Tooltip 
-                cursor={{ fill: 'rgba(255,255,255,0.05)' }}
-                content={({ active, payload }) => {
-                  if (active && payload && payload.length) {
-                    const d = payload[0].payload;
-                    return (
-                      <div className="bg-[rgba(0,0,0,0.9)] border border-border p-2 rounded shadow-lg text-[11px]">
-                        <div className="font-bold border-b border-border mb-1">{d.ticker}</div>
-                        <div className="flex justify-between gap-4">
-                          <span className="text-text-dim">Change:</span>
-                          <span className={d.priceChange >= 0 ? "text-[#10B981]" : "text-[#EF4444]"}>
-                            {d.priceChange > 0 ? '+' : ''}{d.priceChange}%
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  }
-                  return null;
-                }}
-              />
-              <Bar dataKey="priceChange">
-                {data.map((entry, index) => (
-                  <Cell 
-                    key={`cell-${index}`} 
-                    fill={entry.priceChange >= 0 ? '#10B981' : '#EF4444'} 
-                  />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-        )}
-      </div>
-
-      <div className={`flex-none w-full bg-surface rounded-xl border border-border p-4 flex flex-col mb-4 transition-all ${showKairiBar ? 'h-[300px]' : ''}`}>
-        <div className="flex items-center justify-between mb-2">
-          <h2 className="text-sm font-bold text-text-dim uppercase tracking-wider flex items-center gap-2" title="Kairi Relative Index (Distance from EMA 9)">
-            Kairi Indicator (EMA 9) - 4h
-          </h2>
-          <div className="flex items-center gap-4 text-[10px]">
-            <div className="flex items-center gap-1">
-              <div className="w-2 h-2 rounded-full bg-[#10B981]"></div>
-              <span>Positive</span>
-            </div>
-            <div className="flex items-center gap-1">
-              <div className="w-2 h-2 rounded-full bg-[#EF4444]"></div>
-              <span>Negative</span>
-            </div>
-            <button onClick={() => setShowKairiBar(!showKairiBar)} className="p-1 hover:bg-surface-light rounded transition-colors text-text-dim ml-2">
-              {showKairiBar ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-            </button>
-          </div>
-        </div>
-        {showKairiBar && (
-        <div className="flex-1">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={kairiData} margin={{ top: 10, right: 10, bottom: 40, left: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" vertical={false} />
-              <XAxis 
-                dataKey="ticker" 
-                angle={-45} 
-                textAnchor="end" 
-                interval={0} 
-                tick={{ fill: 'var(--color-text-dim)', fontSize: 8, fontFamily: 'var(--font-mono)' }}
-                axisLine={{ stroke: 'var(--color-border)' }}
-              />
-              <YAxis 
-                label={{ value: '%', position: 'insideLeft', fill: 'var(--color-text-dim)', fontSize: 10 }}
-                tick={{ fill: 'var(--color-text-dim)', fontSize: 10, fontFamily: 'var(--font-mono)' }}
-                axisLine={{ stroke: 'var(--color-border)' }}
-              />
-              <Tooltip 
-                cursor={{ fill: 'rgba(255,255,255,0.05)' }}
-                content={({ active, payload }) => {
-                  if (active && payload && payload.length) {
-                    const d = payload[0].payload;
-                    return (
-                      <div className="bg-[rgba(0,0,0,0.9)] border border-border p-2 rounded shadow-lg text-[11px]">
-                        <div className="font-bold border-b border-border mb-1">{d.ticker}</div>
-                        <div className="flex justify-between gap-4">
-                          <span className="text-text-dim">Kairi:</span>
-                          <span className={(d.kairi || 0) >= 0 ? "text-[#10B981]" : "text-[#EF4444]"}>
-                            {(d.kairi || 0) > 0 ? '+' : ''}{d.kairi || 0}%
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  }
-                  return null;
-                }}
-              />
-              <Bar dataKey="kairi">
-                {kairiData.map((entry, index) => (
-                  <Cell 
-                    key={`cell-${index}`} 
-                    fill={(entry.kairi || 0) >= 0 ? '#10B981' : '#EF4444'} 
-                  />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
         )}
       </div>
 
@@ -833,6 +684,15 @@ export default function App() {
         </table>
         )}
       </div>
+
+      {/* Radar Order Block & FVG (SMC) */}
+      <OrderBlockRadar
+        data={data as any}
+        multiData={multiData as any}
+        pinnedCoins={pinnedCoins}
+        setPinnedCoins={setPinnedCoins}
+        onSelectCoin={setSelectedCoin}
+      />
 
       {/* Footer */}
       <footer className="mt-auto pt-4 flex justify-between items-center text-[9px] text-text-dim border-t border-border">
