@@ -100,8 +100,17 @@ export const OrderBlockRadar: React.FC<OrderBlockRadarProps> = ({
 
   // Process all coins and collect active SMC touches per timeframe
   const processedCoins = useMemo(() => {
-    return data.map(coin => {
-      const ticker = coin.ticker;
+    const seen = new Set<string>();
+    const uniqueData = data.filter(c => {
+      if (!c || !c.ticker) return false;
+      const sym = c.ticker.toUpperCase();
+      if (seen.has(sym)) return false;
+      seen.add(sym);
+      return true;
+    });
+
+    return uniqueData.map(coin => {
+      const ticker = coin.ticker.toUpperCase();
       const tfs = multiData[ticker] || {};
 
       const obAlerts: ObAlert[] = [];
@@ -355,7 +364,7 @@ export const OrderBlockRadar: React.FC<OrderBlockRadarProps> = ({
                 </td>
               </tr>
             ) : (
-              sortedCoins.map(coin => {
+              sortedCoins.map((coin, index) => {
                 const ticker = coin.ticker;
                 const tfs = coin.tfs;
                 const isPinned = pinnedCoins.includes(ticker);
@@ -374,7 +383,7 @@ export const OrderBlockRadar: React.FC<OrderBlockRadarProps> = ({
 
                 return (
                   <tr
-                    key={ticker}
+                    key={`${ticker}-${coin.id || index}`}
                     className={rowClasses}
                     onClick={() => {
                       if (onSelectCoin) onSelectCoin(coin);

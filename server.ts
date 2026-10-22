@@ -17,7 +17,66 @@ app.use(express.json());
 
 const cache = new NodeCache({ stdTTL: 180 }); // Cache for 180 seconds
 
+let lastKnownBaseCoins: any[] = [];
 let baseCoinsPromise: Promise<any[]> | null = null;
+
+async function fetchCoinPaprikaCoins(): Promise<any[]> {
+  const cpResponse = await axios.get('https://api.coinpaprika.com/v1/tickers', {
+    timeout: 10000
+  });
+  return cpResponse.data
+    .filter((c: any) => c && c.symbol)
+    .sort((a: any, b: any) => (b.quotes?.USD?.market_cap || 0) - (a.quotes?.USD?.market_cap || 0))
+    .map((c: any) => ({
+      id: c.id,
+      symbol: (c.symbol || '').toUpperCase().trim(),
+      name: c.name,
+      market_cap: c.quotes?.USD?.market_cap || 0,
+      current_price: c.quotes?.USD?.price || 0,
+      rank: c.rank || 0
+    }));
+}
+
+async function fetchCoinGeckoCoins(): Promise<any[]> {
+  const cgResponse = await axios.get('https://api.coingecko.com/api/v3/coins/markets', {
+    params: {
+      vs_currency: 'usd',
+      order: 'market_cap_desc',
+      per_page: 250, // Get max for sorting and filtering
+      page: 1
+    },
+    timeout: 10000
+  });
+  return cgResponse.data
+    .filter((c: any) => c && c.symbol)
+    .map((c: any) => ({
+      id: c.id,
+      symbol: (c.symbol || '').toUpperCase().trim(),
+      name: c.name,
+      market_cap: c.market_cap || 0,
+      current_price: c.current_price || 0,
+      rank: c.market_cap_rank || 0
+    }));
+}
+
+function deduplicateCoinsBySymbol(coins: any[]): any[] {
+  const symbolMap = new Map<string, any>();
+  for (const c of coins) {
+    if (!c || !c.symbol) continue;
+    const sym = c.symbol.trim().toUpperCase();
+    const existing = symbolMap.get(sym);
+    if (!existing) {
+      symbolMap.set(sym, { ...c, symbol: sym });
+    } else {
+      // Keep coin with higher market cap (e.g. real ZEC vs copy/derivative token)
+      if ((c.market_cap || 0) > (existing.market_cap || 0)) {
+        symbolMap.set(sym, { ...c, symbol: sym });
+      }
+    }
+  }
+  return Array.from(symbolMap.values());
+}
+
 async function getBaseCoins(): Promise<any[]> {
   let coins: any[] | undefined = cache.get('base-coins');
   if (coins && coins.length > 0) return coins;
@@ -25,53 +84,35 @@ async function getBaseCoins(): Promise<any[]> {
   if (baseCoinsPromise) return baseCoinsPromise;
 
   baseCoinsPromise = (async () => {
+    let rawCoins: any[] = [];
+
+    // 1. Prioritize CoinPaprika (generous limits, reliable ranking, no 429)
     try {
-      const cgResponse = await axios.get('https://api.coingecko.com/api/v3/coins/markets', {
-        params: {
-          vs_currency: 'usd',
-          order: 'market_cap_desc',
-          per_page: 250, // Get max for sorting and filtering
-          page: 1
-        },
-        timeout: 10000
-      });
-      let resultCoins = cgResponse.data.map((c: any) => ({
-        id: c.id,
-        symbol: c.symbol.toUpperCase(),
-        name: c.name,
-        market_cap: c.market_cap || 0,
-        current_price: c.current_price || 0,
-        rank: c.market_cap_rank || 0
-      }));
-      cache.set('base-coins', resultCoins, 120); // 2 minute cache
-      return resultCoins;
-    } catch (cgError: any) {
-      console.error("CoinGecko failed, falling back to CoinPaprika:", cgError.message);
+      rawCoins = await fetchCoinPaprikaCoins();
+    } catch (cpError: any) {
+      console.warn("CoinPaprika fetch notice:", cpError.message);
+      // 2. Secondary fallback to CoinGecko
       try {
-        const cpResponse = await axios.get('https://api.coinpaprika.com/v1/tickers', {
-          timeout: 10000
-        });
-        let resultCoins = cpResponse.data
-          .sort((a: any, b: any) => (b.quotes?.USD?.market_cap || 0) - (a.quotes?.USD?.market_cap || 0))
-          .map((c: any) => ({
-            id: c.id,
-            symbol: c.symbol.toUpperCase(),
-            name: c.name,
-            market_cap: c.quotes?.USD?.market_cap || 0,
-            current_price: c.quotes?.USD?.price || 0,
-            rank: c.rank
-          }));
-        cache.set('base-coins', resultCoins, 120);
-        return resultCoins;
-      } catch (cpError: any) {
-        console.error("CoinPaprika fallback failed:", cpError.message);
-        throw cpError;
+        rawCoins = await fetchCoinGeckoCoins();
+      } catch (cgError: any) {
+        console.warn("CoinGecko fallback notice (handled gracefully):", cgError.message);
       }
-    } finally {
-      baseCoinsPromise = null;
     }
-  })();
-  
+
+    if (rawCoins.length === 0 && lastKnownBaseCoins.length > 0) {
+      return lastKnownBaseCoins;
+    }
+
+    const resultCoins = deduplicateCoinsBySymbol(rawCoins);
+    if (resultCoins.length > 0) {
+      lastKnownBaseCoins = resultCoins;
+      cache.set('base-coins', resultCoins, 600); // 10 minute cache
+    }
+    return resultCoins.length > 0 ? resultCoins : lastKnownBaseCoins;
+  })().finally(() => {
+    baseCoinsPromise = null;
+  });
+
   return baseCoinsPromise;
 }
 
@@ -451,12 +492,20 @@ app.get('/api/crypto-rsi', async (req, res) => {
     // Fetch KuCoin futures leverage map
     let futuresLeverage = await getFuturesLeverage();
 
-    // Filter by min market cap, blocklist, and Binance availability
+    // Filter by min market cap, blocklist, Binance availability, and deduplicate by symbol
+    const seenSymbols = new Set<string>();
     coins = coins.filter((c: any) => {
+      if (!c || !c.symbol) return false;
+      const sym = c.symbol.toUpperCase();
+      if (seenSymbols.has(sym)) return false;
       const meetsMarketCap = minMarketCap > 0 ? c.market_cap >= minMarketCap : true;
-      const notBlocked = !blocklist.includes(c.symbol);
-      const onBinance = binanceSymbols ? binanceSymbols.has(c.symbol) : true;
-      return meetsMarketCap && notBlocked && onBinance;
+      const notBlocked = !blocklist.includes(sym);
+      const onBinance = binanceSymbols ? binanceSymbols.has(sym) : true;
+      if (meetsMarketCap && notBlocked && onBinance) {
+        seenSymbols.add(sym);
+        return true;
+      }
+      return false;
     });
 
     // Take top N
@@ -624,8 +673,17 @@ app.get('/api/crypto-rsi', async (req, res) => {
       }
     }
 
-    cache.set(cacheKey, results, 30);
-    res.json(results);
+    // Deduplicate results by ticker
+    const uniqueResultMap = new Map<string, any>();
+    for (const r of results) {
+      if (r && r.ticker && !uniqueResultMap.has(r.ticker)) {
+        uniqueResultMap.set(r.ticker, r);
+      }
+    }
+    const finalResults = Array.from(uniqueResultMap.values());
+
+    cache.set(cacheKey, finalResults, 30);
+    res.json(finalResults);
 
   } catch (error: any) {
     console.error('API Error:', error.message);

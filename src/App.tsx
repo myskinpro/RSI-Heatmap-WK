@@ -142,15 +142,39 @@ export default function App() {
         const tf = tfsToFetch[i];
         if (Array.isArray(res.data)) {
            res.data.forEach((coin: CryptoData) => {
-             if (!coin) return;
-             if (!newMulti[coin.ticker]) newMulti[coin.ticker] = {};
-             newMulti[coin.ticker][tf] = coin;
+             if (!coin || !coin.ticker) return;
+             const sym = coin.ticker.toUpperCase();
+             if (!newMulti[sym]) newMulti[sym] = {};
+             newMulti[sym][tf] = coin;
            });
            if (tf === timeframe) {
-              selectedData = res.data.filter(c => c != null);
+              const seenTickers = new Set<string>();
+              selectedData = [];
+              for (const c of res.data) {
+                if (c && c.ticker && !seenTickers.has(c.ticker.toUpperCase())) {
+                  seenTickers.add(c.ticker.toUpperCase());
+                  selectedData.push({ ...c, ticker: c.ticker.toUpperCase() });
+                }
+              }
            }
         }
       });
+
+      // If selectedData is still empty (e.g. timeframe response had error), fallback to any valid response
+      if (selectedData.length === 0) {
+        const seenTickers = new Set<string>();
+        for (const res of responses) {
+          if (Array.isArray(res.data) && res.data.length > 0) {
+            for (const c of res.data) {
+              if (c && c.ticker && !seenTickers.has(c.ticker.toUpperCase())) {
+                seenTickers.add(c.ticker.toUpperCase());
+                selectedData.push({ ...c, ticker: c.ticker.toUpperCase() });
+              }
+            }
+            if (selectedData.length > 0) break;
+          }
+        }
+      }
 
       setData(selectedData);
       setMultiData(newMulti);
@@ -516,7 +540,7 @@ export default function App() {
             </tr>
           </thead>
           <tbody className="font-mono">
-            {data.map(coin => {
+            {data.filter((c, i, arr) => arr.findIndex(x => x.ticker === c.ticker) === i).map(coin => {
               const ticker = coin.ticker;
               const tfs = multiData[ticker] || {};
               const alerts = getTimeframeAlerts(tfs);
@@ -568,7 +592,7 @@ export default function App() {
               return multiSortOrder === 'desc'
                 ? b.ticker.localeCompare(a.ticker)
                 : a.ticker.localeCompare(b.ticker);
-            }).map((coin) => {
+            }).map((coin, index) => {
               const ticker = coin.ticker;
               const tfs = coin.tfs;
               const isPinned = pinnedCoins.includes(ticker);
@@ -586,7 +610,7 @@ export default function App() {
               }
 
               return (
-                <tr key={ticker} className={rowClasses} onClick={() => {
+                <tr key={`${ticker}-${coin.id || index}`} className={rowClasses} onClick={() => {
                   setPinnedCoins(prev => {
                     if (prev.includes(ticker)) return prev.filter(p => p !== ticker);
                     return [...prev, ticker];
