@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import compression from 'compression';
 import axios from 'axios';
 import NodeCache from 'node-cache';
 import path from 'path';
@@ -12,6 +13,7 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
+app.use(compression());
 app.use(cors());
 app.use(express.json());
 

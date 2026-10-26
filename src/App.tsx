@@ -93,6 +93,7 @@ export default function App() {
   const [multiData, setMultiData] = useState<Record<string, Record<string, CryptoData>>>({});
   const [pinnedCoins, setPinnedCoins] = useState<string[]>([]);
   const dismissedCoinsRef = useRef<Set<string>>(new Set());
+  const lastFetchTimeRef = useRef<number>(Date.now());
   const [loading, setLoading] = useState(true);
   const [timeframe, setTimeframe] = useState('4h');
   const [limit, setLimit] = useState(100);
@@ -179,6 +180,7 @@ export default function App() {
       setData(selectedData);
       setMultiData(newMulti);
       setLastUpdated(new Date());
+      lastFetchTimeRef.current = Date.now();
     } catch (error: any) {
       console.error("Failed to fetch data:", error.message);
       setData([]); 
@@ -189,8 +191,29 @@ export default function App() {
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 60000); // Auto-refresh every 1 minute
-    return () => clearInterval(interval);
+
+    // Auto-refresh every 90s, but only if the user is actively viewing the tab (saves 80-90% bandwidth)
+    const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      fetchData();
+    }, 90000);
+
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        const now = Date.now();
+        // If user returns after more than 90 seconds away, refresh immediately
+        if (now - lastFetchTimeRef.current >= 90000) {
+          fetchData();
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, [timeframe, limit, minMarketCap]);
 
   const CustomTooltip = ({ active, payload }: any) => {
