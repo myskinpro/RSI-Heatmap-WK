@@ -336,6 +336,7 @@ export interface SmcZone {
   isInside: boolean;
   distancePct: number;
   penetrationPct: number;
+  mitigationPct?: number;
   hasFvg: boolean;
   candleIndex?: number;
 }
@@ -385,6 +386,7 @@ function detectSMC(klines: any[], minGapPct: number = 0.2): SmcResult {
         isInside: false,
         distancePct: 0,
         penetrationPct: 0,
+        mitigationPct: 0,
         hasFvg: true,
         candleIndex: i - 2
       });
@@ -407,6 +409,7 @@ function detectSMC(klines: any[], minGapPct: number = 0.2): SmcResult {
         isInside: false,
         distancePct: 0,
         penetrationPct: 0,
+        mitigationPct: 0,
         hasFvg: true,
         candleIndex: i - 2
       });
@@ -424,6 +427,25 @@ function detectSMC(klines: any[], minGapPct: number = 0.2): SmcResult {
       if (z.candleIndex !== undefined && z.candleIndex >= i - 2) return true;
       return highs[i] < z.top;
     });
+
+    // Atualização da mitigação atingida por candles posteriores
+    for (const z of activeBullishZones) {
+      if (z.candleIndex !== undefined && i > z.candleIndex) {
+        if (lows[i] < z.top && z.top > z.bottom) {
+          const pen = ((z.top - Math.max(lows[i], z.bottom)) / (z.top - z.bottom)) * 100;
+          z.penetrationPct = Math.max(z.penetrationPct || 0, Math.min(100, Math.round(pen)));
+        }
+      }
+    }
+
+    for (const z of activeBearishZones) {
+      if (z.candleIndex !== undefined && i > z.candleIndex) {
+        if (highs[i] > z.bottom && z.top > z.bottom) {
+          const pen = ((Math.min(highs[i], z.top) - z.bottom) / (z.top - z.bottom)) * 100;
+          z.penetrationPct = Math.max(z.penetrationPct || 0, Math.min(100, Math.round(pen)));
+        }
+      }
+    }
   }
 
   // Mitigação final pelo preço atual
@@ -434,27 +456,33 @@ function detectSMC(klines: any[], minGapPct: number = 0.2): SmcResult {
   for (const z of activeBullishZones) {
     // Acender tag "OB+" (Demanda): Se Preço_Atual <= Limite_Superior_OB e Preço_Atual >= Limite_Inferior_OB
     z.isInside = currentPrice <= z.top && currentPrice >= z.bottom;
+    const currentPen = z.top > z.bottom ? Math.round(((z.top - currentPrice) / (z.top - z.bottom)) * 100) : 0;
     if (z.isInside) {
       z.distancePct = 0;
-      z.penetrationPct = z.top > z.bottom ? Math.round(((z.top - currentPrice) / (z.top - z.bottom)) * 100) : 0;
+      z.penetrationPct = Math.min(100, Math.max(z.penetrationPct || 0, currentPen, 0));
     } else {
       z.distancePct = currentPrice > z.top 
         ? ((currentPrice - z.top) / currentPrice) * 100 
         : ((z.bottom - currentPrice) / currentPrice) * 100;
+      z.penetrationPct = Math.min(100, Math.max(z.penetrationPct || 0, 0));
     }
+    z.mitigationPct = z.penetrationPct;
   }
 
   for (const z of activeBearishZones) {
     // Acender tag "OB-" (Oferta): Se Preço_Atual >= Limite_Inferior_OB e Preço_Atual <= Limite_Superior_OB
     z.isInside = currentPrice >= z.bottom && currentPrice <= z.top;
+    const currentPen = z.top > z.bottom ? Math.round(((currentPrice - z.bottom) / (z.top - z.bottom)) * 100) : 0;
     if (z.isInside) {
       z.distancePct = 0;
-      z.penetrationPct = z.top > z.bottom ? Math.round(((currentPrice - z.bottom) / (z.top - z.bottom)) * 100) : 0;
+      z.penetrationPct = Math.min(100, Math.max(z.penetrationPct || 0, currentPen, 0));
     } else {
       z.distancePct = currentPrice < z.bottom 
         ? ((z.bottom - currentPrice) / currentPrice) * 100 
         : ((currentPrice - z.top) / currentPrice) * 100;
+      z.penetrationPct = Math.min(100, Math.max(z.penetrationPct || 0, 0));
     }
+    z.mitigationPct = z.penetrationPct;
   }
 
   const allActive = [...activeBullishZones, ...activeBearishZones];
