@@ -82,7 +82,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [timeframe] = useState('5m');
   const [limit, setLimit] = useState(100);
-  const [minMarketCap, setMinMarketCap] = useState(0); // All default
+  const [minMarketCap, setMinMarketCap] = useState(200000000); // 200M+ default
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [multiFilter, setMultiFilter] = useState('Alerts');
   const [multiSortBy, setMultiSortBy] = useState<'ticker' | 'timeframe' | 'marketCap' | 'rsi5m'>('timeframe');
@@ -234,6 +234,70 @@ export default function App() {
     );
   };
 
+  const multiRows = useMemo(() => {
+    return data
+      .filter((c, i, arr) => arr.findIndex(x => x.ticker === c.ticker) === i)
+      .map(coin => {
+        const ticker = coin.ticker;
+        const tfs = multiData[ticker] || {};
+        const tf5m = tfs['5m'] || coin;
+        const alerts = getTimeframeAlerts({ '5m': tf5m });
+        const hasSV = alerts.some(a => a.type === 'SV');
+        const hasSC = alerts.some(a => a.type === 'SC');
+
+        return {
+          ...coin,
+          tfs: { '5m': tf5m },
+          alerts,
+          hasSV,
+          hasSC
+        };
+      })
+      .filter(coin => {
+        const ticker = coin.ticker;
+        const isPinned = pinnedCoins.includes(ticker);
+        if (isPinned) return true; // Always show pinned coins
+        if (multiFilter === 'All') return true;
+        if (multiFilter === 'Alerts') return coin.alerts.length > 0;
+        if (multiFilter === 'SV') return coin.hasSV;
+        if (multiFilter === 'SC') return coin.hasSC;
+        return true;
+      })
+      .sort((a, b) => {
+        const aPinned = pinnedCoins.includes(a.ticker);
+        const bPinned = pinnedCoins.includes(b.ticker);
+        if (aPinned && !bPinned) return -1;
+        if (!aPinned && bPinned) return 1;
+
+        const rsiA = a.tfs['5m']?.rsi ?? a.rsi ?? 50;
+        const rsiB = b.tfs['5m']?.rsi ?? b.rsi ?? 50;
+
+        if (multiSortBy === 'timeframe') {
+          const hasAlertA = a.alerts.length > 0 ? 1 : 0;
+          const hasAlertB = b.alerts.length > 0 ? 1 : 0;
+          if (hasAlertA !== hasAlertB) {
+            return multiSortOrder === 'desc' ? hasAlertB - hasAlertA : hasAlertA - hasAlertB;
+          }
+          return a.ticker.localeCompare(b.ticker);
+        }
+
+        if (multiSortBy === 'rsi5m') {
+          return multiSortOrder === 'desc' ? rsiB - rsiA : rsiA - rsiB;
+        }
+
+        if (multiSortBy === 'marketCap') {
+          return multiSortOrder === 'desc'
+            ? (b.marketCap || 0) - (a.marketCap || 0)
+            : (a.marketCap || 0) - (b.marketCap || 0);
+        }
+
+        // Default: A-Z by ticker
+        return multiSortOrder === 'desc'
+          ? b.ticker.localeCompare(a.ticker)
+          : a.ticker.localeCompare(b.ticker);
+      });
+  }, [data, multiData, pinnedCoins, multiFilter, multiSortBy, multiSortOrder]);
+
   return (
     <div className="min-h-screen bg-bg text-text-main font-sans flex flex-col">
       <div className="flex gap-6 px-6 pt-6 pb-2 border-b border-border/50">
@@ -293,11 +357,9 @@ export default function App() {
                   className="bg-surface-light border border-border px-4 py-2 rounded-full text-sm text-text-main cursor-pointer outline-none focus:border-accent"
                 >
                   <option value={0}>All</option>
+                  <option value={200000000}>$200M+</option>
+                  <option value={500000000}>$500M+</option>
                   <option value={1000000000}>$1B+</option>
-                  <option value={5000000000}>$5B+</option>
-                  <option value={10000000000}>$10B+</option>
-                  <option value={50000000000}>$50B+</option>
-                  <option value={100000000000}>$100B+</option>
                 </select>
               </div>
 
@@ -337,6 +399,9 @@ export default function App() {
               <span>RSI Distribution</span>
               <span className="text-[11px] font-extrabold px-2 py-0.5 rounded bg-accent/20 text-accent border border-accent/40 font-mono">
                 5M
+              </span>
+              <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-surface-light text-text-main border border-border font-mono">
+                {data.length} {data.length === 1 ? 'Moeda' : 'Moedas'}
               </span>
             </h2>
             <button onClick={() => setShowScatter(!showScatter)} className="p-1 hover:bg-surface-light rounded transition-colors text-text-dim">
@@ -420,6 +485,9 @@ export default function App() {
             <span>Multi-Timeframe</span>
             <span className="text-[11px] font-extrabold px-2 py-0.5 rounded bg-accent/20 text-accent border border-accent/40 font-mono">
               5M
+            </span>
+            <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-surface-light text-text-main border border-border font-mono">
+              {multiRows.length} {multiRows.length === 1 ? 'Moeda' : 'Moedas'}
             </span>
             <div className="group relative flex items-center">
               <HelpCircle size={14} className="text-text-dim/50 hover:text-text-main cursor-help transition-colors" />
@@ -540,188 +608,126 @@ export default function App() {
             </tr>
           </thead>
           <tbody className="font-mono">
-            {(() => {
-              const rows = data.filter((c, i, arr) => arr.findIndex(x => x.ticker === c.ticker) === i).map(coin => {
+            {multiRows.length === 0 ? (
+              <tr>
+                <td colSpan={5} className="py-8 text-center text-text-dim text-xs">
+                  Nenhuma criptomoeda com alerta de RSI no timeframe de 5M com os filtros atuais.
+                </td>
+              </tr>
+            ) : (
+              multiRows.map((coin, index) => {
                 const ticker = coin.ticker;
-                const tfs = multiData[ticker] || {};
-                const tf5m = tfs['5m'] || coin;
-                const alerts = getTimeframeAlerts({ '5m': tf5m });
-                const hasSV = alerts.some(a => a.type === 'SV');
-                const hasSC = alerts.some(a => a.type === 'SC');
-
-                return {
-                  ...coin,
-                  tfs: { '5m': tf5m },
-                  alerts,
-                  hasSV,
-                  hasSC
-                };
-              }).filter(coin => {
-                const ticker = coin.ticker;
+                const tfs = coin.tfs;
                 const isPinned = pinnedCoins.includes(ticker);
-                if (isPinned) return true; // Always show pinned coins
-                if (multiFilter === 'All') return true;
-                if (multiFilter === 'Alerts') return coin.alerts.length > 0;
-                if (multiFilter === 'SV') return coin.hasSV;
-                if (multiFilter === 'SC') return coin.hasSC;
-                return true;
-              }).sort((a, b) => {
-                const aPinned = pinnedCoins.includes(a.ticker);
-                const bPinned = pinnedCoins.includes(b.ticker);
-                if (aPinned && !bPinned) return -1;
-                if (!aPinned && bPinned) return 1;
+                const { alerts, hasSV, hasSC } = coin;
 
-                const rsiA = a.tfs['5m']?.rsi ?? a.rsi ?? 50;
-                const rsiB = b.tfs['5m']?.rsi ?? b.rsi ?? 50;
-
-                if (multiSortBy === 'timeframe') {
-                  const hasAlertA = a.alerts.length > 0 ? 1 : 0;
-                  const hasAlertB = b.alerts.length > 0 ? 1 : 0;
-                  if (hasAlertA !== hasAlertB) {
-                    return multiSortOrder === 'desc' ? hasAlertB - hasAlertA : hasAlertA - hasAlertB;
-                  }
-                  return a.ticker.localeCompare(b.ticker);
+                let rowClasses = "border-b border-border hover:bg-surface-light transition-all cursor-pointer group";
+                if (hasSV && !hasSC) {
+                  rowClasses = "border-b border-border hover:bg-surface-light border-l-4 border-l-[#10B981] bg-[#10B981]/5 transition-all cursor-pointer group";
+                } else if (hasSC && !hasSV) {
+                  rowClasses = "border-b border-border hover:bg-surface-light border-l-4 border-l-[#EF4444] bg-[#EF4444]/5 transition-all cursor-pointer group";
+                } else if (hasSV && hasSC) {
+                  rowClasses = "border-b border-border hover:bg-surface-light border-l-4 border-l-amber-500 bg-amber-500/5 transition-all cursor-pointer group";
+                } else if (isPinned) {
+                  rowClasses += " border-l-4 border-l-accent";
                 }
 
-                if (multiSortBy === 'rsi5m') {
-                  return multiSortOrder === 'desc' ? rsiB - rsiA : rsiA - rsiB;
-                }
-
-                if (multiSortBy === 'marketCap') {
-                  return multiSortOrder === 'desc'
-                    ? (b.marketCap || 0) - (a.marketCap || 0)
-                    : (a.marketCap || 0) - (b.marketCap || 0);
-                }
-
-                // Default: A-Z by ticker
-                return multiSortOrder === 'desc'
-                  ? b.ticker.localeCompare(a.ticker)
-                  : a.ticker.localeCompare(b.ticker);
-              });
-
-              if (rows.length === 0) {
                 return (
-                  <tr>
-                    <td colSpan={5} className="py-8 text-center text-text-dim text-xs">
-                      Nenhuma criptomoeda com alerta de RSI no timeframe de 5M com os filtros atuais.
+                  <tr key={`${ticker}-${coin.id || index}`} className={rowClasses} onClick={() => {
+                    setPinnedCoins(prev => {
+                      if (prev.includes(ticker)) return prev.filter(p => p !== ticker);
+                      return [...prev, ticker];
+                    });
+                  }}>
+                    <td className="py-2.5 px-4 font-sans font-bold flex items-center gap-2">
+                      <div className="flex items-center gap-1.5 min-w-[3.5rem]">
+                        {isPinned && <Pin size={12} className="text-accent fill-accent rotate-45 shrink-0" />}
+                        <span className="text-sm font-extrabold">{ticker}</span>
+                      </div>
+                      <span className="text-xs text-text-dim font-normal truncate max-w-[120px] hidden sm:inline">
+                        {coin.name}
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-4 font-mono text-xs whitespace-nowrap">
+                      {alerts.length > 0 ? (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {alerts.map((alert, idx) => (
+                            <span
+                              key={idx}
+                              title={`${alert.tf}: RSI ${alert.rsi.toFixed(2)} (${alert.type === 'SV' ? 'Sobrevendido ≤ 30' : 'Sobrecomprado ≥ 70'})`}
+                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold tracking-wide border shadow-sm ${
+                                alert.type === 'SV'
+                                  ? 'bg-[#10B981]/20 text-[#10B981] border-[#10B981]/50 shadow-[0_0_8px_rgba(16,185,129,0.25)]'
+                                  : 'bg-[#EF4444]/20 text-[#EF4444] border-[#EF4444]/50 shadow-[0_0_8px_rgba(239,68,68,0.25)]'
+                              }`}
+                            >
+                              <span className={`w-1.5 h-1.5 rounded-full ${alert.type === 'SV' ? 'bg-[#10B981]' : 'bg-[#EF4444]'}`}></span>
+                              {alert.tf}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-text-dim/30">-</span>
+                      )}
+                    </td>
+                    <td className="py-2.5 px-4 text-text-dim font-mono">
+                      {formatMarketCap(coin.marketCap)}
+                    </td>
+                    {['5m'].map(tf => {
+                      const item = tfs[tf];
+                      if (!item || item.rsi === undefined || item.rsi === null) return <td key={tf} className="py-2.5 px-4 text-text-dim">-</td>;
+                      
+                      let rsiEl = <span className="text-text-main">{item.rsi.toFixed(2)}</span>;
+                      
+                      if (item.rsi >= 70) {
+                        rsiEl = (
+                          <span className="text-[#EF4444] font-bold bg-[#EF4444]/15 px-2 py-0.5 rounded border border-[#EF4444]/30 shadow-[0_0_6px_rgba(239,68,68,0.2)]">
+                            {item.rsi.toFixed(2)}
+                          </span>
+                        );
+                      } else if (item.rsi <= 30) {
+                        rsiEl = (
+                          <span className="text-[#10B981] font-bold bg-[#10B981]/15 px-2 py-0.5 rounded border border-[#10B981]/30 shadow-[0_0_6px_rgba(16,185,129,0.2)]">
+                            {item.rsi.toFixed(2)}
+                          </span>
+                        );
+                      }
+
+                      return (
+                        <td key={tf} className="py-2.5 px-4">
+                          {rsiEl}
+                        </td>
+                      );
+                    })}
+                    <td className="py-2.5 px-4 text-right">
+                      {isPinned ? (
+                        <button 
+                          className="p-1 rounded hover:bg-[rgba(255,255,255,0.1)] text-accent hover:text-white transition-colors"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setPinnedCoins(prev => prev.filter(p => p !== ticker));
+                          }}
+                          title="Desafixar cripto"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      ) : (
+                        <button 
+                          className="p-1 rounded hover:bg-[rgba(255,255,255,0.1)] text-text-dim/30 hover:text-accent transition-colors opacity-0 group-hover:opacity-100"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setPinnedCoins(prev => [...prev, ticker]);
+                          }}
+                          title="Fixar no topo"
+                        >
+                          <Pin className="w-3.5 h-3.5 rotate-45" />
+                        </button>
+                      )}
                     </td>
                   </tr>
                 );
-              }
-
-              return rows.map((coin, index) => {
-              const ticker = coin.ticker;
-              const tfs = coin.tfs;
-              const isPinned = pinnedCoins.includes(ticker);
-              const { alerts, hasSV, hasSC } = coin;
-
-              let rowClasses = "border-b border-border hover:bg-surface-light transition-all cursor-pointer group";
-              if (hasSV && !hasSC) {
-                rowClasses = "border-b border-border hover:bg-surface-light border-l-4 border-l-[#10B981] bg-[#10B981]/5 transition-all cursor-pointer group";
-              } else if (hasSC && !hasSV) {
-                rowClasses = "border-b border-border hover:bg-surface-light border-l-4 border-l-[#EF4444] bg-[#EF4444]/5 transition-all cursor-pointer group";
-              } else if (hasSV && hasSC) {
-                rowClasses = "border-b border-border hover:bg-surface-light border-l-4 border-l-amber-500 bg-amber-500/5 transition-all cursor-pointer group";
-              } else if (isPinned) {
-                rowClasses += " border-l-4 border-l-accent";
-              }
-
-              return (
-                <tr key={`${ticker}-${coin.id || index}`} className={rowClasses} onClick={() => {
-                  setPinnedCoins(prev => {
-                    if (prev.includes(ticker)) return prev.filter(p => p !== ticker);
-                    return [...prev, ticker];
-                  });
-                }}>
-                  <td className="py-2.5 px-4 font-sans font-bold flex items-center gap-2">
-                    <div className="flex items-center gap-1.5 min-w-[3.5rem]">
-                      {isPinned && <Pin size={12} className="text-accent fill-accent rotate-45 shrink-0" />}
-                      <span className="text-sm font-extrabold">{ticker}</span>
-                    </div>
-                    <span className="text-xs text-text-dim font-normal truncate max-w-[120px] hidden sm:inline">
-                      {coin.name}
-                    </span>
-                  </td>
-                  <td className="py-2.5 px-4 font-mono text-xs whitespace-nowrap">
-                    {alerts.length > 0 ? (
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        {alerts.map((alert, idx) => (
-                          <span
-                            key={idx}
-                            title={`${alert.tf}: RSI ${alert.rsi.toFixed(2)} (${alert.type === 'SV' ? 'Sobrevendido ≤ 30' : 'Sobrecomprado ≥ 70'})`}
-                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold tracking-wide border shadow-sm ${
-                              alert.type === 'SV'
-                                ? 'bg-[#10B981]/20 text-[#10B981] border-[#10B981]/50 shadow-[0_0_8px_rgba(16,185,129,0.25)]'
-                                : 'bg-[#EF4444]/20 text-[#EF4444] border-[#EF4444]/50 shadow-[0_0_8px_rgba(239,68,68,0.25)]'
-                            }`}
-                          >
-                            <span className={`w-1.5 h-1.5 rounded-full ${alert.type === 'SV' ? 'bg-[#10B981]' : 'bg-[#EF4444]'}`}></span>
-                            {alert.tf}
-                          </span>
-                        ))}
-                      </div>
-                    ) : (
-                      <span className="text-text-dim/30">-</span>
-                    )}
-                  </td>
-                  <td className="py-2.5 px-4 text-text-dim font-mono">
-                    {formatMarketCap(coin.marketCap)}
-                  </td>
-                  {['5m'].map(tf => {
-                    const item = tfs[tf];
-                    if (!item || item.rsi === undefined || item.rsi === null) return <td key={tf} className="py-2.5 px-4 text-text-dim">-</td>;
-                    
-                    let rsiEl = <span className="text-text-main">{item.rsi.toFixed(2)}</span>;
-                    
-                    if (item.rsi >= 70) {
-                      rsiEl = (
-                        <span className="text-[#EF4444] font-bold bg-[#EF4444]/15 px-2 py-0.5 rounded border border-[#EF4444]/30 shadow-[0_0_6px_rgba(239,68,68,0.2)]">
-                          {item.rsi.toFixed(2)}
-                        </span>
-                      );
-                    } else if (item.rsi <= 30) {
-                      rsiEl = (
-                        <span className="text-[#10B981] font-bold bg-[#10B981]/15 px-2 py-0.5 rounded border border-[#10B981]/30 shadow-[0_0_6px_rgba(16,185,129,0.2)]">
-                          {item.rsi.toFixed(2)}
-                        </span>
-                      );
-                    }
-
-                    return (
-                      <td key={tf} className="py-2.5 px-4">
-                        {rsiEl}
-                      </td>
-                    );
-                  })}
-                  <td className="py-2.5 px-4 text-right">
-                    {isPinned ? (
-                      <button 
-                        className="p-1 rounded hover:bg-[rgba(255,255,255,0.1)] text-accent hover:text-white transition-colors"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setPinnedCoins(prev => prev.filter(p => p !== ticker));
-                        }}
-                        title="Desafixar cripto"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                    ) : (
-                      <button 
-                        className="p-1 rounded hover:bg-[rgba(255,255,255,0.1)] text-text-dim/30 hover:text-accent transition-colors opacity-0 group-hover:opacity-100"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setPinnedCoins(prev => [...prev, ticker]);
-                        }}
-                        title="Fixar no topo"
-                      >
-                        <Pin className="w-3.5 h-3.5 rotate-45" />
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              );
-            });
-            })()}
+              })
+            )}
           </tbody>
         </table>
         )}
