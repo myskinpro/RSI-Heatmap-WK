@@ -9,7 +9,6 @@ import Evolution from './components/Evolution';
 import RiskCalculator from './components/RiskCalculator';
 import TradeJournal from './components/TradeJournal';
 import Strategy from './components/Strategy';
-import { OrderBlockRadar } from './components/OrderBlockRadar';
 
 interface CryptoData {
   id: string;
@@ -32,7 +31,6 @@ interface CryptoData {
   rank: number;
   leverage?: number | null;
   emaCross?: 'up' | 'down' | 'bullish' | 'bearish' | 'none';
-  smc?: any;
 }
 
 const ZONES = [
@@ -107,8 +105,8 @@ export default function App() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      // Fetch 5m (for RSI Distribution & Multi-Timeframe) and 4h (for OrderBlockRadar SMC)
-      const tfsToFetch = ['5m', '4h'];
+      // Fetch 5m for RSI Distribution & Multi-Timeframe
+      const tfsToFetch = ['5m'];
 
       const responses = await Promise.all(
         tfsToFetch.map(tf =>
@@ -728,15 +726,6 @@ export default function App() {
         </table>
         )}
       </div>
-
-      {/* Radar Order Block & FVG (SMC) */}
-      <OrderBlockRadar
-        data={data as any}
-        multiData={multiData as any}
-        pinnedCoins={pinnedCoins}
-        setPinnedCoins={setPinnedCoins}
-        onSelectCoin={setSelectedCoin}
-      />
 
       {/* Footer */}
       <footer className="mt-auto pt-4 flex justify-between items-center text-[9px] text-text-dim border-t border-border">
