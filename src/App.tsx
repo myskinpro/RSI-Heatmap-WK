@@ -41,14 +41,6 @@ const ZONES = [
   { name: 'Oversold', min: 0, max: 30, color: '#10B981', fill: 'rgba(16, 185, 129, 0.15)' }
 ];
 
-const TIMEFRAMES = [
-  { label: '15m', value: '15m' },
-  { label: '30m', value: '30m' },
-  { label: '1h', value: '1h' },
-  { label: '4h', value: '4h' },
-  { label: '1d', value: '1d' }
-];
-
 const LIMITS = [
   { label: 'Top 50', value: 50 },
   { label: 'Top 100', value: 100 },
@@ -70,18 +62,13 @@ export interface TimeframeAlert {
 
 export function getTimeframeAlerts(tfs: Record<string, CryptoData> | undefined): TimeframeAlert[] {
   if (!tfs) return [];
-  // Order from largest to smallest timeframe (1D down to 5M)
-  const timeframes = ['1d', '4h', '1h', '30m', '15m', '5m'];
   const alerts: TimeframeAlert[] = [];
-
-  for (const tf of timeframes) {
-    const item = tfs[tf];
-    if (item && typeof item.rsi === 'number') {
-      if (item.rsi <= 30) {
-        alerts.push({ tf: tf.toUpperCase(), type: 'SV', rsi: item.rsi });
-      } else if (item.rsi >= 70) {
-        alerts.push({ tf: tf.toUpperCase(), type: 'SC', rsi: item.rsi });
-      }
+  const item = tfs['5m'];
+  if (item && typeof item.rsi === 'number') {
+    if (item.rsi <= 30) {
+      alerts.push({ tf: '5M', type: 'SV', rsi: item.rsi });
+    } else if (item.rsi >= 70) {
+      alerts.push({ tf: '5M', type: 'SC', rsi: item.rsi });
     }
   }
 
@@ -95,16 +82,16 @@ export default function App() {
   const dismissedCoinsRef = useRef<Set<string>>(new Set());
   const lastFetchTimeRef = useRef<number>(Date.now());
   const [loading, setLoading] = useState(true);
-  const [timeframe, setTimeframe] = useState('4h');
+  const [timeframe] = useState('5m');
   const [limit, setLimit] = useState(100);
   const [minMarketCap, setMinMarketCap] = useState(0); // All default
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [multiFilter, setMultiFilter] = useState('Alerts');
-  const [multiSortBy, setMultiSortBy] = useState<'ticker' | 'timeframe' | 'marketCap'>('timeframe');
+  const [multiSortBy, setMultiSortBy] = useState<'ticker' | 'timeframe' | 'marketCap' | 'rsi5m'>('timeframe');
   const [multiSortOrder, setMultiSortOrder] = useState<'asc' | 'desc'>('desc');
   const [showScatter, setShowScatter] = useState(true);
 
-  const handleMultiSort = (column: 'ticker' | 'timeframe' | 'marketCap') => {
+  const handleMultiSort = (column: 'ticker' | 'timeframe' | 'marketCap' | 'rsi5m') => {
     if (multiSortBy === column) {
       setMultiSortOrder(prev => prev === 'asc' ? 'desc' : 'asc');
     } else {
@@ -120,21 +107,19 @@ export default function App() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const tfsToFetch = ['5m', '15m', '30m', '1h', '4h', '1d'];
-      if (!tfsToFetch.includes(timeframe)) tfsToFetch.push(timeframe);
+      // Fetch 5m (for RSI Distribution & Multi-Timeframe) and 4h (for OrderBlockRadar SMC)
+      const tfsToFetch = ['5m', '4h'];
 
-      const responses = [];
-      for (const tf of tfsToFetch) {
-        try {
-          const res = await axios.get('/api/crypto-rsi', { 
-            params: { timeframe: tf, limit, minMarketCap }, 
-            timeout: 60000 
-          });
-          responses.push(res);
-        } catch(e) {
-          responses.push({ data: [] });
-        }
-      }
+      const responses = await Promise.all(
+        tfsToFetch.map(tf =>
+          axios
+            .get('/api/crypto-rsi', {
+              params: { timeframe: tf, limit, minMarketCap },
+              timeout: 60000
+            })
+            .catch(() => ({ data: [] }))
+        )
+      );
 
       const newMulti: Record<string, Record<string, CryptoData>> = {};
       let selectedData: CryptoData[] = [];
@@ -142,40 +127,24 @@ export default function App() {
       responses.forEach((res, i) => {
         const tf = tfsToFetch[i];
         if (Array.isArray(res.data)) {
-           res.data.forEach((coin: CryptoData) => {
-             if (!coin || !coin.ticker) return;
-             const sym = coin.ticker.toUpperCase();
-             if (!newMulti[sym]) newMulti[sym] = {};
-             newMulti[sym][tf] = coin;
-           });
-           if (tf === timeframe) {
-              const seenTickers = new Set<string>();
-              selectedData = [];
-              for (const c of res.data) {
-                if (c && c.ticker && !seenTickers.has(c.ticker.toUpperCase())) {
-                  seenTickers.add(c.ticker.toUpperCase());
-                  selectedData.push({ ...c, ticker: c.ticker.toUpperCase() });
-                }
-              }
-           }
-        }
-      });
-
-      // If selectedData is still empty (e.g. timeframe response had error), fallback to any valid response
-      if (selectedData.length === 0) {
-        const seenTickers = new Set<string>();
-        for (const res of responses) {
-          if (Array.isArray(res.data) && res.data.length > 0) {
+          res.data.forEach((coin: CryptoData) => {
+            if (!coin || !coin.ticker) return;
+            const sym = coin.ticker.toUpperCase();
+            if (!newMulti[sym]) newMulti[sym] = {};
+            newMulti[sym][tf] = coin;
+          });
+          if (tf === '5m') {
+            const seenTickers = new Set<string>();
+            selectedData = [];
             for (const c of res.data) {
               if (c && c.ticker && !seenTickers.has(c.ticker.toUpperCase())) {
                 seenTickers.add(c.ticker.toUpperCase());
                 selectedData.push({ ...c, ticker: c.ticker.toUpperCase() });
               }
             }
-            if (selectedData.length > 0) break;
           }
         }
-      }
+      });
 
       setData(selectedData);
       setMultiData(newMulti);
@@ -336,13 +305,9 @@ export default function App() {
 
               <div className="flex flex-col gap-1">
                 <label className="text-[10px] uppercase text-text-dim tracking-wider">Timeframe</label>
-                <select 
-                  value={timeframe} 
-                  onChange={(e) => setTimeframe(e.target.value)}
-                  className="bg-surface-light border border-border px-4 py-2 rounded-full text-sm text-text-main cursor-pointer outline-none focus:border-accent"
-                >
-                  {TIMEFRAMES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-                </select>
+                <div className="bg-surface-light border border-border px-4 py-2 rounded-full text-sm text-accent font-semibold font-mono select-none">
+                  5m
+                </div>
               </div>
 
               <button 
@@ -371,7 +336,10 @@ export default function App() {
         <div className={`w-full bg-surface rounded-xl border border-border p-4 relative flex flex-col transition-all ${showScatter ? 'flex-1 min-h-[450px]' : ''}`}>
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-sm font-bold text-text-dim uppercase tracking-wider flex items-center gap-2">
-              RSI Distribution
+              <span>RSI Distribution</span>
+              <span className="text-[11px] font-extrabold px-2 py-0.5 rounded bg-accent/20 text-accent border border-accent/40 font-mono">
+                5M
+              </span>
             </h2>
             <button onClick={() => setShowScatter(!showScatter)} className="p-1 hover:bg-surface-light rounded transition-colors text-text-dim">
               {showScatter ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
@@ -451,13 +419,16 @@ export default function App() {
       <div className="flex-none w-full bg-surface rounded-xl border border-border p-4 flex flex-col mb-4 overflow-x-auto">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-sm font-bold text-text-dim uppercase tracking-wider flex items-center gap-2">
-            Multi-Timeframe
+            <span>Multi-Timeframe</span>
+            <span className="text-[11px] font-extrabold px-2 py-0.5 rounded bg-accent/20 text-accent border border-accent/40 font-mono">
+              5M
+            </span>
             <div className="group relative flex items-center">
               <HelpCircle size={14} className="text-text-dim/50 hover:text-text-main cursor-help transition-colors" />
               <div className="absolute left-0 top-full mt-2 w-80 sm:w-96 bg-[#1a1a1b] shadow-2xl border border-border rounded-lg p-4 text-xs font-normal text-text-dim opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-[100]">
-                <div className="mb-2 font-bold text-text-main text-sm">Monitoramento Multi-Timeframe</div>
+                <div className="mb-2 font-bold text-text-main text-sm">Monitoramento RSI • 5M</div>
                 <p className="text-xs text-text-dim leading-relaxed mb-3">
-                  Acompanhamento simultâneo do RSI (14) nos tempos gráficos 5M, 15M, 30M, 1H, 4H e 1D.
+                  Acompanhamento exclusivo do RSI (14) no tempo gráfico de <strong>5 Minutos (5M)</strong>.
                 </p>
                 <div className="space-y-2">
                   <div className="bg-[#10B981]/10 border border-[#10B981]/30 rounded p-2.5 flex items-start gap-2">
@@ -528,13 +499,13 @@ export default function App() {
               <th 
                 onClick={() => handleMultiSort('timeframe')} 
                 className="py-2 px-4 font-semibold uppercase tracking-wider cursor-pointer select-none hover:text-white transition-colors"
-                title="Clique para ordenar por Timeframe (Maior → Menor)"
+                title="Clique para ordenar por Alerta (5M)"
               >
                 <div className="flex items-center gap-1.5">
                   <span>TIMEFRAME</span>
                   {multiSortBy === 'timeframe' && (
                     <span className="text-[10px] text-accent font-bold">
-                      {multiSortOrder === 'desc' ? '↓ 1D→5M' : '↑ 5M→1D'}
+                      {multiSortOrder === 'desc' ? '↓ 5M' : '↑ 5M'}
                     </span>
                   )}
                 </div>
@@ -553,69 +524,94 @@ export default function App() {
                   )}
                 </div>
               </th>
-              <th className="py-2 px-4 font-semibold uppercase tracking-wider">5M</th>
-              <th className="py-2 px-4 font-semibold uppercase tracking-wider">15M</th>
-              <th className="py-2 px-4 font-semibold uppercase tracking-wider">30M</th>
-              <th className="py-2 px-4 font-semibold uppercase tracking-wider">1H</th>
-              <th className="py-2 px-4 font-semibold uppercase tracking-wider">4H</th>
-              <th className="py-2 px-4 font-semibold uppercase tracking-wider">1D</th>
+              <th 
+                onClick={() => handleMultiSort('rsi5m')}
+                className="py-2 px-4 font-semibold uppercase tracking-wider cursor-pointer select-none hover:text-white transition-colors"
+                title="Clique para ordenar pelo valor do RSI (5M)"
+              >
+                <div className="flex items-center gap-1.5">
+                  <span>5M</span>
+                  {multiSortBy === 'rsi5m' && (
+                    <span className="text-[10px] text-accent font-bold">
+                      {multiSortOrder === 'desc' ? '↓' : '↑'}
+                    </span>
+                  )}
+                </div>
+              </th>
               <th className="py-2 px-4 font-semibold uppercase tracking-wider w-8"></th>
             </tr>
           </thead>
           <tbody className="font-mono">
-            {data.filter((c, i, arr) => arr.findIndex(x => x.ticker === c.ticker) === i).map(coin => {
-              const ticker = coin.ticker;
-              const tfs = multiData[ticker] || {};
-              const alerts = getTimeframeAlerts(tfs);
-              const hasSV = alerts.some(a => a.type === 'SV');
-              const hasSC = alerts.some(a => a.type === 'SC');
+            {(() => {
+              const rows = data.filter((c, i, arr) => arr.findIndex(x => x.ticker === c.ticker) === i).map(coin => {
+                const ticker = coin.ticker;
+                const tfs = multiData[ticker] || {};
+                const tf5m = tfs['5m'] || coin;
+                const alerts = getTimeframeAlerts({ '5m': tf5m });
+                const hasSV = alerts.some(a => a.type === 'SV');
+                const hasSC = alerts.some(a => a.type === 'SC');
 
-              return {
-                ...coin,
-                tfs,
-                alerts,
-                hasSV,
-                hasSC
-              };
-            }).filter(coin => {
-              const ticker = coin.ticker;
-              const isPinned = pinnedCoins.includes(ticker);
-              if (isPinned) return true; // Always show pinned coins
-              if (multiFilter === 'All') return true;
-              if (multiFilter === 'Alerts') return coin.alerts.length > 0;
-              if (multiFilter === 'SV') return coin.hasSV;
-              if (multiFilter === 'SC') return coin.hasSC;
-              return true;
-            }).sort((a, b) => {
-              const aPinned = pinnedCoins.includes(a.ticker);
-              const bPinned = pinnedCoins.includes(b.ticker);
-              if (aPinned && !bPinned) return -1;
-              if (!aPinned && bPinned) return 1;
+                return {
+                  ...coin,
+                  tfs: { '5m': tf5m },
+                  alerts,
+                  hasSV,
+                  hasSC
+                };
+              }).filter(coin => {
+                const ticker = coin.ticker;
+                const isPinned = pinnedCoins.includes(ticker);
+                if (isPinned) return true; // Always show pinned coins
+                if (multiFilter === 'All') return true;
+                if (multiFilter === 'Alerts') return coin.alerts.length > 0;
+                if (multiFilter === 'SV') return coin.hasSV;
+                if (multiFilter === 'SC') return coin.hasSC;
+                return true;
+              }).sort((a, b) => {
+                const aPinned = pinnedCoins.includes(a.ticker);
+                const bPinned = pinnedCoins.includes(b.ticker);
+                if (aPinned && !bPinned) return -1;
+                if (!aPinned && bPinned) return 1;
 
-              if (multiSortBy === 'timeframe') {
-                const TF_ORDER: Record<string, number> = { '1D': 6, '4H': 5, '1H': 4, '30M': 3, '15M': 2, '5M': 1 };
-                const maxLen = Math.max(a.alerts.length, b.alerts.length);
-                for (let i = 0; i < maxLen; i++) {
-                  const weightA = a.alerts[i] ? (TF_ORDER[a.alerts[i].tf] || 0) : 0;
-                  const weightB = b.alerts[i] ? (TF_ORDER[b.alerts[i].tf] || 0) : 0;
-                  if (weightA !== weightB) {
-                    return multiSortOrder === 'desc' ? weightB - weightA : weightA - weightB;
+                const rsiA = a.tfs['5m']?.rsi ?? a.rsi ?? 50;
+                const rsiB = b.tfs['5m']?.rsi ?? b.rsi ?? 50;
+
+                if (multiSortBy === 'timeframe') {
+                  const hasAlertA = a.alerts.length > 0 ? 1 : 0;
+                  const hasAlertB = b.alerts.length > 0 ? 1 : 0;
+                  if (hasAlertA !== hasAlertB) {
+                    return multiSortOrder === 'desc' ? hasAlertB - hasAlertA : hasAlertA - hasAlertB;
                   }
+                  return a.ticker.localeCompare(b.ticker);
                 }
-                return a.ticker.localeCompare(b.ticker);
-              }
 
-              if (multiSortBy === 'marketCap') {
+                if (multiSortBy === 'rsi5m') {
+                  return multiSortOrder === 'desc' ? rsiB - rsiA : rsiA - rsiB;
+                }
+
+                if (multiSortBy === 'marketCap') {
+                  return multiSortOrder === 'desc'
+                    ? (b.marketCap || 0) - (a.marketCap || 0)
+                    : (a.marketCap || 0) - (b.marketCap || 0);
+                }
+
+                // Default: A-Z by ticker
                 return multiSortOrder === 'desc'
-                  ? (b.marketCap || 0) - (a.marketCap || 0)
-                  : (a.marketCap || 0) - (b.marketCap || 0);
+                  ? b.ticker.localeCompare(a.ticker)
+                  : a.ticker.localeCompare(b.ticker);
+              });
+
+              if (rows.length === 0) {
+                return (
+                  <tr>
+                    <td colSpan={5} className="py-8 text-center text-text-dim text-xs">
+                      Nenhuma criptomoeda com alerta de RSI no timeframe de 5M com os filtros atuais.
+                    </td>
+                  </tr>
+                );
               }
 
-              // Default: A-Z by ticker
-              return multiSortOrder === 'desc'
-                ? b.ticker.localeCompare(a.ticker)
-                : a.ticker.localeCompare(b.ticker);
-            }).map((coin, index) => {
+              return rows.map((coin, index) => {
               const ticker = coin.ticker;
               const tfs = coin.tfs;
               const isPinned = pinnedCoins.includes(ticker);
@@ -673,7 +669,7 @@ export default function App() {
                   <td className="py-2.5 px-4 text-text-dim font-mono">
                     {formatMarketCap(coin.marketCap)}
                   </td>
-                  {['5m', '15m', '30m', '1h', '4h', '1d'].map(tf => {
+                  {['5m'].map(tf => {
                     const item = tfs[tf];
                     if (!item || item.rsi === undefined || item.rsi === null) return <td key={tf} className="py-2.5 px-4 text-text-dim">-</td>;
                     
@@ -726,7 +722,8 @@ export default function App() {
                   </td>
                 </tr>
               );
-            })}
+            });
+            })()}
           </tbody>
         </table>
         )}

@@ -82,8 +82,12 @@ export const OrderBlockRadar: React.FC<OrderBlockRadarProps> = ({
 
   // Process all coins focusing EXCLUSIVELY on 4H timeframe
   const processedCoins = useMemo(() => {
+    const sourceCoins = data.length > 0
+      ? data
+      : Object.values(multiData).map(tfs => tfs['4h']).filter(Boolean);
+
     const seen = new Set<string>();
-    const uniqueData = data.filter(c => {
+    const uniqueData = sourceCoins.filter(c => {
       if (!c || !c.ticker) return false;
       const sym = c.ticker.toUpperCase();
       if (seen.has(sym)) return false;
@@ -95,8 +99,8 @@ export const OrderBlockRadar: React.FC<OrderBlockRadarProps> = ({
       const ticker = coin.ticker.toUpperCase();
       const tfs = multiData[ticker] || {};
       
-      // Exclusively monitor 4H
-      const data4h = tfs['4h'] || (coin.timeframe === '4h' ? coin : null) || coin;
+      // Exclusively monitor 4H (never fallback to 5m SMC zones)
+      const data4h = tfs['4h'] || (coin.timeframe === '4h' ? coin : null);
       const smc = data4h?.smc;
 
       // Check active zones on 4H

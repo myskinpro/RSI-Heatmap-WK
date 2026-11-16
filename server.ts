@@ -514,7 +514,7 @@ app.get('/api/crypto-rsi', async (req, res) => {
     let coins = await getBaseCoins();
 
     // Blocklist of symbols to exclude (stablecoins and others requested by user)
-    const blocklist = ['HTX', 'USDE', 'ETC', 'U', 'USD1', 'USDC', 'USDD', 'USDS', 'PYUSD', 'USDG', 'XAUT', 'USDT', 'DAI', 'FDUSD', 'TUSD', 'USTC', 'STETH', 'WETH', 'WBTC', 'WEETH', 'USDT', 'BUSD', 'FRAX', 'QNT', 'BTT', 'BTTC'];
+    const blocklist = ['HTX', 'USDE', 'ETC', 'U', 'USD1', 'USDC', 'USDD', 'USDS', 'PYUSD', 'USDG', 'XAUT', 'USDT', 'DAI', 'FDUSD', 'TUSD', 'USTC', 'STETH', 'WETH', 'WBTC', 'WEETH', 'USDT', 'BUSD', 'FRAX', 'QNT', 'BTT', 'BTTC', '币安人生', 'BINANCELIFE'];
     
     // Fetch Binance symbols to filter ONLY Binance coins using Coinpaprika
     let binanceSymbols = await getBinanceSymbols();
@@ -527,9 +527,11 @@ app.get('/api/crypto-rsi', async (req, res) => {
     coins = coins.filter((c: any) => {
       if (!c || !c.symbol) return false;
       const sym = c.symbol.toUpperCase();
+      const nameUpper = (c.name || '').toUpperCase();
+      const idUpper = (c.id || '').toUpperCase();
       if (seenSymbols.has(sym)) return false;
       const meetsMarketCap = minMarketCap > 0 ? c.market_cap >= minMarketCap : true;
-      const notBlocked = !blocklist.includes(sym);
+      const notBlocked = !blocklist.includes(sym) && !nameUpper.includes('BINANCELIFE') && !nameUpper.includes('币安人生') && !idUpper.includes('BINANCELIFE');
       const onBinance = binanceSymbols ? binanceSymbols.has(sym) : true;
       if (meetsMarketCap && notBlocked && onBinance) {
         seenSymbols.add(sym);
