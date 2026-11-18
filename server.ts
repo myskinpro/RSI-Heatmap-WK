@@ -344,7 +344,7 @@ app.get('/api/crypto-rsi', async (req, res) => {
     let coins = await getBaseCoins();
 
     // Blocklist of symbols to exclude (stablecoins and others requested by user)
-    const blocklist = ['HTX', 'USDE', 'ETC', 'U', 'USD1', 'USDC', 'USDD', 'USDS', 'PYUSD', 'USDG', 'XAUT', 'USDT', 'DAI', 'FDUSD', 'TUSD', 'USTC', 'STETH', 'WETH', 'WBTC', 'WEETH', 'USDT', 'BUSD', 'FRAX', 'QNT', 'BTT', 'BTTC', '币安人生', 'BINANCELIFE', 'DCR'];
+    const blocklist = ['HTX', 'USDE', 'ETC', 'U', 'USD1', 'USDC', 'USDD', 'USDS', 'PYUSD', 'USDG', 'XAUT', 'USDT', 'DAI', 'FDUSD', 'TUSD', 'USTC', 'STETH', 'WETH', 'WBTC', 'WEETH', 'USDT', 'BUSD', 'FRAX', 'QNT', 'BTT', 'BTTC', '币安人生', 'BINANCELIFE', 'DCR', 'BNSOL', 'WBETH', 'BFUSD'];
     
     // Fetch Binance symbols to filter ONLY Binance coins using Coinpaprika
     let binanceSymbols = await getBinanceSymbols();
