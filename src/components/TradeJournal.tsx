@@ -318,6 +318,7 @@ const TradeJournal: React.FC = () => {
                     <option value="Cruzamento Médias 9x18">Cruzamento Médias 9x18</option>
                     <option value="Fimathe">Fimathe</option>
                     <option value="Traders Club">Traders Club</option>
+                    <option value="SMC Engine PRO">SMC Engine PRO</option>
                   </select>
                 </div>
                 <div>
