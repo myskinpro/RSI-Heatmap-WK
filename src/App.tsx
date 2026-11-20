@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceArea, ReferenceLine, Cell, ZAxis } from 'recharts';
-import { RefreshCw, TrendingUp, ChevronUp, ChevronDown, BarChart2, HelpCircle, User, X, Pin } from 'lucide-react';
+import { RefreshCw, TrendingUp, ChevronUp, ChevronDown, BarChart2, HelpCircle, User, X, Pin, Volume2, VolumeX } from 'lucide-react';
 import axios from 'axios';
 import { CoinHistoryModal } from './components/CoinHistoryModal';
 import { Dashboard } from './components/Dashboard';
@@ -52,49 +52,187 @@ const formatMarketCap = (marketCap: number) => {
   return `$${marketCap.toLocaleString()}`;
 };
 
-export interface TimeframeAlert {
-  tf: string;
-  type: 'SV' | 'SC';
-  rsi: number;
+export type SignalType = 'LONG' | 'SHORT' | null;
+export type MultiRowStatus = 'LONG' | 'SHORT' | 'WAITING' | null;
+
+export interface MultiSignalInfo {
+  status: MultiRowStatus;
+  signal: SignalType;
+  liveStatus1h: 'SV' | 'SC' | null;
+  effective1h: 'SV' | 'SC' | null;
+  status1m: 'SV' | 'SC' | null;
+  rsi1h: number | null;
+  rsi1m: number | null;
 }
 
-export function getTimeframeAlerts(tfs: Record<string, CryptoData> | undefined): TimeframeAlert[] {
-  if (!tfs) return [];
-  const alerts: TimeframeAlert[] = [];
-  const item = tfs['5m'];
-  if (item && typeof item.rsi === 'number') {
-    if (item.rsi <= 30) {
-      alerts.push({ tf: '5M', type: 'SV', rsi: item.rsi });
-    } else if (item.rsi >= 70) {
-      alerts.push({ tf: '5M', type: 'SC', rsi: item.rsi });
+export function evaluateMultiSignal(
+  tf1h?: CryptoData,
+  tf1m?: CryptoData,
+  autoTrigger1h?: 'SV' | 'SC'
+): MultiSignalInfo {
+  const rsi1h = tf1h && typeof tf1h.rsi === 'number' ? tf1h.rsi : null;
+  const rsi1m = tf1m && typeof tf1m.rsi === 'number' ? tf1m.rsi : null;
+
+  let liveStatus1h: 'SV' | 'SC' | null = null;
+  if (rsi1h !== null) {
+    if (rsi1h <= 30) liveStatus1h = 'SV';
+    else if (rsi1h >= 70) liveStatus1h = 'SC';
+  }
+
+  let status1m: 'SV' | 'SC' | null = null;
+  if (rsi1m !== null) {
+    if (rsi1m <= 30) status1m = 'SV';
+    else if (rsi1m >= 70) status1m = 'SC';
+  }
+
+  // Use live 1H SV/SC touch if active, otherwise preserve the 1H SV/SC touch that auto-pinned this coin
+  const effective1h = liveStatus1h ?? autoTrigger1h ?? null;
+
+  let signal: SignalType = null;
+  let status: MultiRowStatus = null;
+
+  if (effective1h === 'SV') {
+    if (status1m === 'SC') {
+      // 1H tocou SV + 1M entrou em SC (oposto) = Sinal SHORT
+      signal = 'SHORT';
+      status = 'SHORT';
+    } else {
+      status = 'WAITING';
+    }
+  } else if (effective1h === 'SC') {
+    if (status1m === 'SV') {
+      // 1H tocou SC + 1M entrou em SV (oposto) = Sinal LONG
+      signal = 'LONG';
+      status = 'LONG';
+    } else {
+      status = 'WAITING';
     }
   }
 
-  return alerts;
+  return { status, signal, liveStatus1h, effective1h, status1m, rsi1h, rsi1m };
 }
 
 export default function App() {
   const [data, setData] = useState<CryptoData[]>([]);
   const [multiData, setMultiData] = useState<Record<string, Record<string, CryptoData>>>({});
   const [pinnedCoins, setPinnedCoins] = useState<string[]>([]);
+  const [autoPinnedTriggers, setAutoPinnedTriggers] = useState<Record<string, 'SV' | 'SC'>>({});
   const dismissedCoinsRef = useRef<Set<string>>(new Set());
   const lastFetchTimeRef = useRef<number>(Date.now());
   const [loading, setLoading] = useState(true);
-  const [timeframe] = useState('5m');
+  const [timeframe] = useState('1h');
   const [limit, setLimit] = useState(100);
   const [minMarketCap, setMinMarketCap] = useState(200000000); // 200M+ default
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const [multiFilter, setMultiFilter] = useState('Alerts');
-  const [multiSortBy, setMultiSortBy] = useState<'ticker' | 'timeframe' | 'marketCap' | 'rsi5m'>('timeframe');
+  const [multiFilter, setMultiFilter] = useState('Monitoring');
+  const [multiSortBy, setMultiSortBy] = useState<'ticker' | 'signal' | 'marketCap' | 'rsi1h' | 'rsi1m'>('signal');
   const [multiSortOrder, setMultiSortOrder] = useState<'asc' | 'desc'>('desc');
   const [showScatter, setShowScatter] = useState(true);
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('multiTimeframeSoundAlert');
+      return saved !== null ? saved === 'true' : true;
+    } catch {
+      return true;
+    }
+  });
+  const soundEnabledRef = useRef(soundEnabled);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const prevActiveSignalsRef = useRef<Map<string, 'LONG' | 'SHORT'>>(new Map());
 
-  const handleMultiSort = (column: 'ticker' | 'timeframe' | 'marketCap' | 'rsi5m') => {
+  useEffect(() => {
+    soundEnabledRef.current = soundEnabled;
+    try {
+      localStorage.setItem('multiTimeframeSoundAlert', String(soundEnabled));
+    } catch {
+      // Ignore storage errors
+    }
+  }, [soundEnabled]);
+
+  const getAudioContext = (): AudioContext | null => {
+    if (typeof window === 'undefined') return null;
+    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) return null;
+    if (!audioCtxRef.current) {
+      audioCtxRef.current = new AudioCtx();
+    }
+    if (audioCtxRef.current.state === 'suspended') {
+      audioCtxRef.current.resume().catch(() => {});
+    }
+    return audioCtxRef.current;
+  };
+
+  // Unlock browser AudioContext on first user interaction so background signal alerts can play
+  useEffect(() => {
+    const unlockAudio = () => {
+      if (soundEnabledRef.current) {
+        getAudioContext();
+      }
+    };
+    window.addEventListener('pointerdown', unlockAudio, { once: true });
+    window.addEventListener('keydown', unlockAudio, { once: true });
+    return () => {
+      window.removeEventListener('pointerdown', unlockAudio);
+      window.removeEventListener('keydown', unlockAudio);
+    };
+  }, []);
+
+  const playSoftSignalAlert = (type: 'LONG' | 'SHORT') => {
+    try {
+      const ctx = getAudioContext();
+      if (!ctx || ctx.state !== 'running') return;
+
+      const now = ctx.currentTime;
+      // Soft, mellow two-note sine chime (ascending for LONG, descending for SHORT)
+      const notes = type === 'LONG' ? [523.25, 659.25] : [659.25, 523.25];
+
+      notes.forEach((freq, idx) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        const start = now + idx * 0.14;
+        const duration = 0.42;
+
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, start);
+
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.linearRampToValueAtTime(0.055, start + 0.03);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        osc.start(start);
+        osc.stop(start + duration + 0.02);
+      });
+    } catch {
+      // Ignore audio playback errors
+    }
+  };
+
+  const handleToggleSound = () => {
+    setSoundEnabled(prev => {
+      const next = !prev;
+      if (next) {
+        const ctx = getAudioContext();
+        if (ctx) {
+          if (ctx.state === 'suspended') {
+            ctx.resume().then(() => playSoftSignalAlert('LONG')).catch(() => {});
+          } else {
+            playSoftSignalAlert('LONG');
+          }
+        }
+      }
+      return next;
+    });
+  };
+
+  const handleMultiSort = (column: 'ticker' | 'signal' | 'marketCap' | 'rsi1h' | 'rsi1m') => {
     if (multiSortBy === column) {
       setMultiSortOrder(prev => prev === 'asc' ? 'desc' : 'asc');
     } else {
       setMultiSortBy(column);
-      setMultiSortOrder(column === 'marketCap' || column === 'timeframe' ? 'desc' : 'asc');
+      setMultiSortOrder(column === 'marketCap' || column === 'signal' ? 'desc' : 'asc');
     }
   };
   const [showTable, setShowTable] = useState(true);
@@ -105,8 +243,8 @@ export default function App() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      // Fetch 5m for RSI Distribution & Multi-Timeframe
-      const tfsToFetch = ['5m'];
+      // Fetch 1h (for RSI Distribution & Multi-Timeframe) and 1m (for Multi-Timeframe entry trigger)
+      const tfsToFetch = ['1h', '1m'];
 
       const responses = await Promise.all(
         tfsToFetch.map(tf =>
@@ -131,7 +269,7 @@ export default function App() {
             if (!newMulti[sym]) newMulti[sym] = {};
             newMulti[sym][tf] = coin;
           });
-          if (tf === '5m') {
+          if (tf === '1h') {
             const seenTickers = new Set<string>();
             selectedData = [];
             for (const c of res.data) {
@@ -183,6 +321,77 @@ export default function App() {
     };
   }, [timeframe, limit, minMarketCap]);
 
+  // Auto-pin any coin that touches SV (<= 30) or SC (>= 70) in RSI Distribution (1H)
+  useEffect(() => {
+    if (!data || data.length === 0) return;
+
+    const toPin: string[] = [];
+    const newTriggers: Record<string, 'SV' | 'SC'> = {};
+
+    for (const coin of data) {
+      if (!coin || !coin.ticker || typeof coin.rsi !== 'number') continue;
+      const sym = coin.ticker.toUpperCase();
+      const isSV = coin.rsi <= 30;
+      const isSC = coin.rsi >= 70;
+
+      if (isSV || isSC) {
+        if (!dismissedCoinsRef.current.has(sym)) {
+          toPin.push(sym);
+          newTriggers[sym] = isSV ? 'SV' : 'SC';
+        }
+      } else {
+        // Coin left SV/SC zone: allow future touches to auto-pin again
+        if (dismissedCoinsRef.current.has(sym)) {
+          dismissedCoinsRef.current.delete(sym);
+        }
+      }
+    }
+
+    if (toPin.length > 0) {
+      setPinnedCoins(prev => {
+        const next = [...prev];
+        let changed = false;
+        for (const sym of toPin) {
+          if (!next.includes(sym)) {
+            next.push(sym);
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }
+
+    if (Object.keys(newTriggers).length > 0) {
+      setAutoPinnedTriggers(prev => {
+        let changed = false;
+        const next = { ...prev };
+        for (const [sym, trigger] of Object.entries(newTriggers)) {
+          if (next[sym] !== trigger) {
+            next[sym] = trigger;
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }
+  }, [data]);
+
+  const handleUnpinCoin = (ticker: string) => {
+    dismissedCoinsRef.current.add(ticker);
+    setPinnedCoins(prev => prev.filter(p => p !== ticker));
+    setAutoPinnedTriggers(prev => {
+      if (!(ticker in prev)) return prev;
+      const next = { ...prev };
+      delete next[ticker];
+      return next;
+    });
+  };
+
+  const handlePinCoin = (ticker: string) => {
+    dismissedCoinsRef.current.delete(ticker);
+    setPinnedCoins(prev => (prev.includes(ticker) ? prev : [...prev, ticker]));
+  };
+
   const CustomTooltip = ({ active, payload }: any) => {
     if (active && payload && payload.length) {
       const data = payload[0].payload;
@@ -194,7 +403,7 @@ export default function App() {
             <span className="text-text-main">${data.price.toLocaleString(undefined, { maximumFractionDigits: 4 })}</span>
           </div>
           <div className="flex justify-between gap-8 mt-1">
-            <span className="text-text-dim">RSI (14)</span>
+            <span className="text-text-dim">RSI (14) • 1H</span>
             <span className="font-bold" style={{ color: getZoneColor(data.rsi) }}>{data.rsi}</span>
           </div>
           <div className="flex justify-between gap-8 mt-1">
@@ -234,55 +443,96 @@ export default function App() {
     );
   };
 
-  const multiRows = useMemo(() => {
+  const evaluatedMultiCoins = useMemo(() => {
     return data
       .filter((c, i, arr) => arr.findIndex(x => x.ticker === c.ticker) === i)
       .map(coin => {
         const ticker = coin.ticker;
         const tfs = multiData[ticker] || {};
-        const tf5m = tfs['5m'] || coin;
-        const alerts = getTimeframeAlerts({ '5m': tf5m });
-        const hasSV = alerts.some(a => a.type === 'SV');
-        const hasSC = alerts.some(a => a.type === 'SC');
+        const tf1h = tfs['1h'] || coin;
+        const tf1m = tfs['1m'];
+        const autoTrigger1h = autoPinnedTriggers[ticker];
+        const signalInfo = evaluateMultiSignal(tf1h, tf1m, autoTrigger1h);
 
         return {
           ...coin,
-          tfs: { '5m': tf5m },
-          alerts,
-          hasSV,
-          hasSC
+          tfs: { '1h': tf1h, '1m': tf1m },
+          ...signalInfo
         };
-      })
+      });
+  }, [data, multiData, autoPinnedTriggers]);
+
+  // Play soft sound alert ONLY when a coin newly enters a LONG or SHORT signal
+  useEffect(() => {
+    if (evaluatedMultiCoins.length === 0) return;
+
+    const nextActiveSignals = new Map<string, 'LONG' | 'SHORT'>();
+    let newlyTriggeredSignal: 'LONG' | 'SHORT' | null = null;
+
+    for (const coin of evaluatedMultiCoins) {
+      if (coin.signal === 'LONG' || coin.signal === 'SHORT') {
+        nextActiveSignals.set(coin.ticker, coin.signal);
+        const prevSignal = prevActiveSignalsRef.current.get(coin.ticker);
+        if (prevSignal !== coin.signal && !newlyTriggeredSignal) {
+          newlyTriggeredSignal = coin.signal;
+        }
+      }
+    }
+
+    prevActiveSignalsRef.current = nextActiveSignals;
+
+    if (newlyTriggeredSignal && soundEnabledRef.current) {
+      playSoftSignalAlert(newlyTriggeredSignal);
+    }
+  }, [evaluatedMultiCoins]);
+
+  const multiRows = useMemo(() => {
+    return evaluatedMultiCoins
       .filter(coin => {
         const ticker = coin.ticker;
         const isPinned = pinnedCoins.includes(ticker);
-        if (isPinned) return true; // Always show pinned coins
         if (multiFilter === 'All') return true;
-        if (multiFilter === 'Alerts') return coin.alerts.length > 0;
-        if (multiFilter === 'SV') return coin.hasSV;
-        if (multiFilter === 'SC') return coin.hasSC;
+        if (multiFilter === 'Monitoring') return isPinned;
+        if (multiFilter === 'Signals') return coin.signal !== null;
+        if (multiFilter === 'LONG') return coin.signal === 'LONG';
+        if (multiFilter === 'SHORT') return coin.signal === 'SHORT';
+        if (multiFilter === 'Waiting') return coin.status === 'WAITING';
         return true;
       })
       .sort((a, b) => {
         const aPinned = pinnedCoins.includes(a.ticker);
         const bPinned = pinnedCoins.includes(b.ticker);
-        if (aPinned && !bPinned) return -1;
-        if (!aPinned && bPinned) return 1;
 
-        const rsiA = a.tfs['5m']?.rsi ?? a.rsi ?? 50;
-        const rsiB = b.tfs['5m']?.rsi ?? b.rsi ?? 50;
+        const rsi1hA = a.rsi1h ?? 50;
+        const rsi1hB = b.rsi1h ?? 50;
+        const rsi1mA = a.rsi1m ?? 50;
+        const rsi1mB = b.rsi1m ?? 50;
 
-        if (multiSortBy === 'timeframe') {
-          const hasAlertA = a.alerts.length > 0 ? 1 : 0;
-          const hasAlertB = b.alerts.length > 0 ? 1 : 0;
-          if (hasAlertA !== hasAlertB) {
-            return multiSortOrder === 'desc' ? hasAlertB - hasAlertA : hasAlertA - hasAlertB;
+        if (multiSortBy === 'signal') {
+          const rankVal = (row: typeof a, pinned: boolean) => {
+            if (row.status === 'LONG') return 5;
+            if (row.status === 'SHORT') return 4;
+            if (row.status === 'WAITING') return 3;
+            if (pinned) return 2;
+            return 0;
+          };
+          const rankA = rankVal(a, aPinned);
+          const rankB = rankVal(b, bPinned);
+          if (rankA !== rankB) {
+            return multiSortOrder === 'desc' ? rankB - rankA : rankA - rankB;
           }
           return a.ticker.localeCompare(b.ticker);
         }
 
-        if (multiSortBy === 'rsi5m') {
-          return multiSortOrder === 'desc' ? rsiB - rsiA : rsiA - rsiB;
+        if (aPinned && !bPinned) return -1;
+        if (!aPinned && bPinned) return 1;
+
+        if (multiSortBy === 'rsi1h') {
+          return multiSortOrder === 'desc' ? rsi1hB - rsi1hA : rsi1hA - rsi1hB;
+        }
+
+        if (multiSortBy === 'rsi1m') {
+          return multiSortOrder === 'desc' ? rsi1mB - rsi1mA : rsi1mA - rsi1mB;
         }
 
         if (multiSortBy === 'marketCap') {
@@ -296,7 +546,7 @@ export default function App() {
           ? b.ticker.localeCompare(a.ticker)
           : a.ticker.localeCompare(b.ticker);
       });
-  }, [data, multiData, pinnedCoins, multiFilter, multiSortBy, multiSortOrder]);
+  }, [evaluatedMultiCoins, pinnedCoins, multiFilter, multiSortBy, multiSortOrder]);
 
   return (
     <div className="min-h-screen bg-bg text-text-main font-sans flex flex-col">
@@ -366,7 +616,7 @@ export default function App() {
               <div className="flex flex-col gap-1">
                 <label className="text-[10px] uppercase text-text-dim tracking-wider">Timeframe</label>
                 <div className="bg-surface-light border border-border px-4 py-2 rounded-full text-sm text-accent font-semibold font-mono select-none">
-                  5m
+                  1h
                 </div>
               </div>
 
@@ -398,7 +648,7 @@ export default function App() {
             <h2 className="text-sm font-bold text-text-dim uppercase tracking-wider flex items-center gap-2">
               <span>RSI Distribution</span>
               <span className="text-[11px] font-extrabold px-2 py-0.5 rounded bg-accent/20 text-accent border border-accent/40 font-mono">
-                5M
+                1H
               </span>
               <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-surface-light text-text-main border border-border font-mono">
                 {data.length} {data.length === 1 ? 'Moeda' : 'Moedas'}
@@ -480,11 +730,11 @@ export default function App() {
       </div>
 
       <div className="flex-none w-full bg-surface rounded-xl border border-border p-4 flex flex-col mb-4 overflow-x-auto">
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
           <h2 className="text-sm font-bold text-text-dim uppercase tracking-wider flex items-center gap-2">
             <span>Multi-Timeframe</span>
             <span className="text-[11px] font-extrabold px-2 py-0.5 rounded bg-accent/20 text-accent border border-accent/40 font-mono">
-              5M
+              1H + 1M
             </span>
             <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-surface-light text-text-main border border-border font-mono">
               {multiRows.length} {multiRows.length === 1 ? 'Moeda' : 'Moedas'}
@@ -492,26 +742,35 @@ export default function App() {
             <div className="group relative flex items-center">
               <HelpCircle size={14} className="text-text-dim/50 hover:text-text-main cursor-help transition-colors" />
               <div className="absolute left-0 top-full mt-2 w-80 sm:w-96 bg-[#1a1a1b] shadow-2xl border border-border rounded-lg p-4 text-xs font-normal text-text-dim opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-[100]">
-                <div className="mb-2 font-bold text-text-main text-sm">Monitoramento RSI • 5M</div>
+                <div className="mb-2 font-bold text-text-main text-sm">Regras Multi-Timeframe • 1H + 1M</div>
                 <p className="text-xs text-text-dim leading-relaxed mb-3">
-                  Acompanhamento exclusivo do RSI (14) no tempo gráfico de <strong>5 Minutos (5M)</strong>.
+                  Sempre que uma moeda toca em <strong>SV (≤ 30)</strong> ou <strong>SC (≥ 70)</strong> no card <strong>RSI Distribution (1H)</strong>, ela é <strong>fixada automaticamente</strong> aqui e fica em <strong>Aguardando</strong> até o <strong>1M</strong> entrar em SV/SC oposto.
                 </p>
                 <div className="space-y-2">
+                  <div className="bg-amber-500/10 border border-amber-500/30 rounded p-2.5 flex items-start gap-2">
+                    <div className="w-2.5 h-2.5 rounded-full bg-amber-400 shrink-0 mt-0.5 shadow-[0_0_6px_rgba(251,191,36,0.8)]"></div>
+                    <div>
+                      <div className="font-bold text-amber-400 text-xs">Aguardando (Auto-fixada)</div>
+                      <div className="text-[11px] text-text-dim mt-0.5">
+                        Moeda tocou SV/SC no 1H e aguarda o 1M entrar no extremo oposto (SC ou SV).
+                      </div>
+                    </div>
+                  </div>
                   <div className="bg-[#10B981]/10 border border-[#10B981]/30 rounded p-2.5 flex items-start gap-2">
                     <div className="w-2.5 h-2.5 rounded-full bg-[#10B981] shrink-0 mt-0.5 shadow-[0_0_6px_rgba(16,185,129,0.8)]"></div>
                     <div>
-                      <div className="font-bold text-[#10B981] text-xs">SV - Sobrevendido (RSI ≤ 30)</div>
+                      <div className="font-bold text-[#10B981] text-xs">Sinal LONG = 1H em SC + 1M em SV (≤ 30)</div>
                       <div className="text-[11px] text-text-dim mt-0.5">
-                        Sinal de sobrevenda. O timeframe é destacado em <span className="text-[#10B981] font-semibold">verde</span> na coluna TIMEFRAME.
+                        1H tocou Sobrecompra (≥ 70) e o 1M entrou em Sobrevenda (≤ 30).
                       </div>
                     </div>
                   </div>
                   <div className="bg-[#EF4444]/10 border border-[#EF4444]/30 rounded p-2.5 flex items-start gap-2">
                     <div className="w-2.5 h-2.5 rounded-full bg-[#EF4444] shrink-0 mt-0.5 shadow-[0_0_6px_rgba(239,68,68,0.8)]"></div>
                     <div>
-                      <div className="font-bold text-[#EF4444] text-xs">SC - Sobrecomprado (RSI ≥ 70)</div>
+                      <div className="font-bold text-[#EF4444] text-xs">Sinal SHORT = 1H em SV + 1M em SC (≥ 70)</div>
                       <div className="text-[11px] text-text-dim mt-0.5">
-                        Sinal de sobrecompra. O timeframe é destacado em <span className="text-[#EF4444] font-semibold">vermelho</span> na coluna TIMEFRAME.
+                        1H tocou Sobrevenda (≤ 30) e o 1M entrou em Sobrecompra (≥ 70).
                       </div>
                     </div>
                   </div>
@@ -519,24 +778,47 @@ export default function App() {
               </div>
             </div>
           </h2>
-          <div className="flex items-center gap-4 text-[10px]">
+          <div className="flex items-center gap-4 text-[10px] flex-wrap">
+            <button
+              type="button"
+              onClick={handleToggleSound}
+              title={
+                soundEnabled
+                  ? 'Alerta sonoro suave ativado apenas para sinais LONG / SHORT (clique para desativar)'
+                  : 'Alerta sonoro desativado (clique para ativar)'
+              }
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium border transition-colors cursor-pointer ${
+                soundEnabled
+                  ? 'bg-accent/15 text-accent border-accent/40 hover:bg-accent/25'
+                  : 'bg-surface-light text-text-dim border-border hover:text-text-main'
+              }`}
+            >
+              {soundEnabled ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
+              <span>Alerta Sonoro: {soundEnabled ? 'ON' : 'OFF'}</span>
+            </button>
             <select 
               value={multiFilter}
               onChange={(e) => setMultiFilter(e.target.value)}
               className="bg-surface-light border border-border px-2 py-1 rounded text-xs text-text-main cursor-pointer outline-none focus:border-accent mr-2"
             >
+              <option value="Monitoring">Fixadas (Aguardando / Sinais)</option>
+              <option value="Signals">Apenas Sinais (LONG / SHORT)</option>
+              <option value="LONG">Apenas Sinal LONG (1H SC + 1M SV)</option>
+              <option value="SHORT">Apenas Sinal SHORT (1H SV + 1M SC)</option>
+              <option value="Waiting">Apenas Aguardando</option>
               <option value="All">Todas as Moedas</option>
-              <option value="Alerts">Com Alerta (SV ou SC)</option>
-              <option value="SV">Apenas Sobrevendido (SV ≤ 30)</option>
-              <option value="SC">Apenas Sobrecomprado (SC ≥ 70)</option>
             </select>
-            <div className="flex items-center gap-1.5" title="Sobrevendido: RSI ≤ 30">
-              <div className="w-2.5 h-2.5 rounded-full bg-[#10B981] shadow-[0_0_6px_rgba(16,185,129,0.8)]"></div>
-              <span className="font-semibold text-[#10B981]">SV ≤ 30</span>
+            <div className="flex items-center gap-1.5" title="Fixada automaticamente após tocar SV/SC no 1H — aguardando 1M oposto">
+              <div className="w-2.5 h-2.5 rounded-full bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.8)]"></div>
+              <span className="font-semibold text-amber-400">Aguardando</span>
             </div>
-            <div className="flex items-center gap-1.5" title="Sobrecomprado: RSI ≥ 70">
+            <div className="flex items-center gap-1.5" title="1H em SC (≥ 70) + 1M em SV (≤ 30) = Sinal LONG">
+              <div className="w-2.5 h-2.5 rounded-full bg-[#10B981] shadow-[0_0_6px_rgba(16,185,129,0.8)]"></div>
+              <span className="font-semibold text-[#10B981]">Sinal LONG (1H SC + 1M SV)</span>
+            </div>
+            <div className="flex items-center gap-1.5" title="1H em SV (≤ 30) + 1M em SC (≥ 70) = Sinal SHORT">
               <div className="w-2.5 h-2.5 rounded-full bg-[#EF4444] shadow-[0_0_6px_rgba(239,68,68,0.8)]"></div>
-              <span className="font-semibold text-[#EF4444]">SC ≥ 70</span>
+              <span className="font-semibold text-[#EF4444]">Sinal SHORT (1H SV + 1M SC)</span>
             </div>
             <button onClick={() => setShowTable(!showTable)} className="p-1 hover:bg-surface-light rounded transition-colors text-text-dim ml-2">
               {showTable ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
@@ -563,15 +845,15 @@ export default function App() {
                 </div>
               </th>
               <th 
-                onClick={() => handleMultiSort('timeframe')} 
+                onClick={() => handleMultiSort('signal')} 
                 className="py-2 px-4 font-semibold uppercase tracking-wider cursor-pointer select-none hover:text-white transition-colors"
-                title="Clique para ordenar por Alerta (5M)"
+                title="Clique para ordenar por Status / Sinal"
               >
                 <div className="flex items-center gap-1.5">
-                  <span>TIMEFRAME</span>
-                  {multiSortBy === 'timeframe' && (
+                  <span>STATUS / SINAL</span>
+                  {multiSortBy === 'signal' && (
                     <span className="text-[10px] text-accent font-bold">
-                      {multiSortOrder === 'desc' ? '↓ 5M' : '↑ 5M'}
+                      {multiSortOrder === 'desc' ? '↓' : '↑'}
                     </span>
                   )}
                 </div>
@@ -591,13 +873,27 @@ export default function App() {
                 </div>
               </th>
               <th 
-                onClick={() => handleMultiSort('rsi5m')}
+                onClick={() => handleMultiSort('rsi1h')}
                 className="py-2 px-4 font-semibold uppercase tracking-wider cursor-pointer select-none hover:text-white transition-colors"
-                title="Clique para ordenar pelo valor do RSI (5M)"
+                title="Clique para ordenar pelo valor do RSI (1H)"
               >
                 <div className="flex items-center gap-1.5">
-                  <span>5M</span>
-                  {multiSortBy === 'rsi5m' && (
+                  <span>1H</span>
+                  {multiSortBy === 'rsi1h' && (
+                    <span className="text-[10px] text-accent font-bold">
+                      {multiSortOrder === 'desc' ? '↓' : '↑'}
+                    </span>
+                  )}
+                </div>
+              </th>
+              <th 
+                onClick={() => handleMultiSort('rsi1m')}
+                className="py-2 px-4 font-semibold uppercase tracking-wider cursor-pointer select-none hover:text-white transition-colors"
+                title="Clique para ordenar pelo valor do RSI (1M)"
+              >
+                <div className="flex items-center gap-1.5">
+                  <span>1M</span>
+                  {multiSortBy === 'rsi1m' && (
                     <span className="text-[10px] text-accent font-bold">
                       {multiSortOrder === 'desc' ? '↓' : '↑'}
                     </span>
@@ -610,34 +906,34 @@ export default function App() {
           <tbody className="font-mono">
             {multiRows.length === 0 ? (
               <tr>
-                <td colSpan={5} className="py-8 text-center text-text-dim text-xs">
-                  Nenhuma criptomoeda com alerta de RSI no timeframe de 5M com os filtros atuais.
+                <td colSpan={6} className="py-8 text-center text-text-dim text-xs">
+                  Nenhuma moeda fixada ou com sinal no filtro atual. Assim que uma moeda tocar em SV (≤ 30) ou SC (≥ 70) no gráfico de 1H, ela será fixada automaticamente aqui.
                 </td>
               </tr>
             ) : (
               multiRows.map((coin, index) => {
                 const ticker = coin.ticker;
-                const tfs = coin.tfs;
                 const isPinned = pinnedCoins.includes(ticker);
-                const { alerts, hasSV, hasSC } = coin;
+                const { status, signal, liveStatus1h, effective1h, status1m, rsi1h, rsi1m } = coin;
 
                 let rowClasses = "border-b border-border hover:bg-surface-light transition-all cursor-pointer group";
-                if (hasSV && !hasSC) {
-                  rowClasses = "border-b border-border hover:bg-surface-light border-l-4 border-l-[#10B981] bg-[#10B981]/5 transition-all cursor-pointer group";
-                } else if (hasSC && !hasSV) {
-                  rowClasses = "border-b border-border hover:bg-surface-light border-l-4 border-l-[#EF4444] bg-[#EF4444]/5 transition-all cursor-pointer group";
-                } else if (hasSV && hasSC) {
-                  rowClasses = "border-b border-border hover:bg-surface-light border-l-4 border-l-amber-500 bg-amber-500/5 transition-all cursor-pointer group";
+                if (status === 'LONG') {
+                  rowClasses = "border-b border-border hover:bg-surface-light border-l-4 border-l-[#10B981] bg-[#10B981]/10 transition-all cursor-pointer group";
+                } else if (status === 'SHORT') {
+                  rowClasses = "border-b border-border hover:bg-surface-light border-l-4 border-l-[#EF4444] bg-[#EF4444]/10 transition-all cursor-pointer group";
+                } else if (status === 'WAITING') {
+                  rowClasses = "border-b border-border hover:bg-surface-light border-l-4 border-l-amber-400 bg-amber-500/5 transition-all cursor-pointer group";
                 } else if (isPinned) {
                   rowClasses += " border-l-4 border-l-accent";
                 }
 
                 return (
                   <tr key={`${ticker}-${coin.id || index}`} className={rowClasses} onClick={() => {
-                    setPinnedCoins(prev => {
-                      if (prev.includes(ticker)) return prev.filter(p => p !== ticker);
-                      return [...prev, ticker];
-                    });
+                    if (isPinned) {
+                      handleUnpinCoin(ticker);
+                    } else {
+                      handlePinCoin(ticker);
+                    }
                   }}>
                     <td className="py-2.5 px-4 font-sans font-bold flex items-center gap-2">
                       <div className="flex items-center gap-1.5 min-w-[3.5rem]">
@@ -649,22 +945,38 @@ export default function App() {
                       </span>
                     </td>
                     <td className="py-2.5 px-4 font-mono text-xs whitespace-nowrap">
-                      {alerts.length > 0 ? (
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          {alerts.map((alert, idx) => (
-                            <span
-                              key={idx}
-                              title={`${alert.tf}: RSI ${alert.rsi.toFixed(2)} (${alert.type === 'SV' ? 'Sobrevendido ≤ 30' : 'Sobrecomprado ≥ 70'})`}
-                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold tracking-wide border shadow-sm ${
-                                alert.type === 'SV'
-                                  ? 'bg-[#10B981]/20 text-[#10B981] border-[#10B981]/50 shadow-[0_0_8px_rgba(16,185,129,0.25)]'
-                                  : 'bg-[#EF4444]/20 text-[#EF4444] border-[#EF4444]/50 shadow-[0_0_8px_rgba(239,68,68,0.25)]'
-                              }`}
-                            >
-                              <span className={`w-1.5 h-1.5 rounded-full ${alert.type === 'SV' ? 'bg-[#10B981]' : 'bg-[#EF4444]'}`}></span>
-                              {alert.tf}
-                            </span>
-                          ))}
+                      {status === 'LONG' ? (
+                        <span
+                          title={`Sinal LONG: 1H tocou SC (${rsi1h?.toFixed(2)}) e 1M entrou em SV (${rsi1m?.toFixed(2)})`}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded text-[11px] font-bold tracking-wide border shadow-sm bg-[#10B981]/20 text-[#10B981] border-[#10B981]/50 shadow-[0_0_8px_rgba(16,185,129,0.3)]"
+                        >
+                          <span className="w-1.5 h-1.5 rounded-full bg-[#10B981] animate-pulse"></span>
+                          SINAL LONG
+                        </span>
+                      ) : status === 'SHORT' ? (
+                        <span
+                          title={`Sinal SHORT: 1H tocou SV (${rsi1h?.toFixed(2)}) e 1M entrou em SC (${rsi1m?.toFixed(2)})`}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded text-[11px] font-bold tracking-wide border shadow-sm bg-[#EF4444]/20 text-[#EF4444] border-[#EF4444]/50 shadow-[0_0_8px_rgba(239,68,68,0.3)]"
+                        >
+                          <span className="w-1.5 h-1.5 rounded-full bg-[#EF4444] animate-pulse"></span>
+                          SINAL SHORT
+                        </span>
+                      ) : status === 'WAITING' ? (
+                        <div className="inline-flex items-center gap-2">
+                          <span
+                            title={
+                              effective1h === 'SC'
+                                ? 'Fixada após tocar SC no 1H — aguardando 1M entrar em SV (≤ 30) para Sinal LONG'
+                                : 'Fixada após tocar SV no 1H — aguardando 1M entrar em SC (≥ 70) para Sinal SHORT'
+                            }
+                            className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded text-[11px] font-bold tracking-wide border bg-amber-500/15 text-amber-400 border-amber-500/40"
+                          >
+                            <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                            Aguardando
+                          </span>
+                          <span className="text-[10px] text-text-dim hidden md:inline">
+                            {effective1h === 'SC' ? '1M SV (≤ 30) → LONG' : '1M SC (≥ 70) → SHORT'}
+                          </span>
                         </div>
                       ) : (
                         <span className="text-text-dim/30">-</span>
@@ -673,39 +985,68 @@ export default function App() {
                     <td className="py-2.5 px-4 text-text-dim font-mono">
                       {formatMarketCap(coin.marketCap)}
                     </td>
-                    {['5m'].map(tf => {
-                      const item = tfs[tf];
-                      if (!item || item.rsi === undefined || item.rsi === null) return <td key={tf} className="py-2.5 px-4 text-text-dim">-</td>;
-                      
-                      let rsiEl = <span className="text-text-main">{item.rsi.toFixed(2)}</span>;
-                      
-                      if (item.rsi >= 70) {
-                        rsiEl = (
-                          <span className="text-[#EF4444] font-bold bg-[#EF4444]/15 px-2 py-0.5 rounded border border-[#EF4444]/30 shadow-[0_0_6px_rgba(239,68,68,0.2)]">
-                            {item.rsi.toFixed(2)}
+                    {/* 1H RSI */}
+                    <td className="py-2.5 px-4">
+                      {rsi1h === null ? (
+                        <span className="text-text-dim">-</span>
+                      ) : liveStatus1h === 'SC' ? (
+                        <span className="inline-flex items-center gap-1.5 text-[#EF4444] font-bold bg-[#EF4444]/15 px-2 py-0.5 rounded border border-[#EF4444]/30 shadow-[0_0_6px_rgba(239,68,68,0.2)]">
+                          <span>{rsi1h.toFixed(2)}</span>
+                          <span className="text-[9px] uppercase opacity-90">SC</span>
+                        </span>
+                      ) : liveStatus1h === 'SV' ? (
+                        <span className="inline-flex items-center gap-1.5 text-[#10B981] font-bold bg-[#10B981]/15 px-2 py-0.5 rounded border border-[#10B981]/30 shadow-[0_0_6px_rgba(16,185,129,0.2)]">
+                          <span>{rsi1h.toFixed(2)}</span>
+                          <span className="text-[9px] uppercase opacity-90">SV</span>
+                        </span>
+                      ) : effective1h ? (
+                        <span className="inline-flex items-center gap-1.5 text-text-main">
+                          <span>{rsi1h.toFixed(2)}</span>
+                          <span className={`text-[9px] uppercase px-1.5 py-0.2 rounded border ${
+                            effective1h === 'SC'
+                              ? 'text-[#EF4444]/85 bg-[#EF4444]/10 border-[#EF4444]/25'
+                              : 'text-[#10B981]/85 bg-[#10B981]/10 border-[#10B981]/25'
+                          }`}>
+                            tocou {effective1h}
                           </span>
-                        );
-                      } else if (item.rsi <= 30) {
-                        rsiEl = (
-                          <span className="text-[#10B981] font-bold bg-[#10B981]/15 px-2 py-0.5 rounded border border-[#10B981]/30 shadow-[0_0_6px_rgba(16,185,129,0.2)]">
-                            {item.rsi.toFixed(2)}
-                          </span>
-                        );
-                      }
-
-                      return (
-                        <td key={tf} className="py-2.5 px-4">
-                          {rsiEl}
-                        </td>
-                      );
-                    })}
+                        </span>
+                      ) : (
+                        <span className="text-text-main">{rsi1h.toFixed(2)}</span>
+                      )}
+                    </td>
+                    {/* 1M RSI */}
+                    <td className="py-2.5 px-4">
+                      {rsi1m === null ? (
+                        <span className="text-text-dim">-</span>
+                      ) : status1m === 'SC' ? (
+                        <span className={`inline-flex items-center gap-1.5 text-[#EF4444] font-bold px-2 py-0.5 rounded border ${
+                          signal === 'SHORT'
+                            ? 'bg-[#EF4444]/25 border-[#EF4444]/60 shadow-[0_0_8px_rgba(239,68,68,0.35)]'
+                            : 'bg-[#EF4444]/15 border-[#EF4444]/30'
+                        }`}>
+                          <span>{rsi1m.toFixed(2)}</span>
+                          <span className="text-[9px] uppercase opacity-90">SC</span>
+                        </span>
+                      ) : status1m === 'SV' ? (
+                        <span className={`inline-flex items-center gap-1.5 text-[#10B981] font-bold px-2 py-0.5 rounded border ${
+                          signal === 'LONG'
+                            ? 'bg-[#10B981]/25 border-[#10B981]/60 shadow-[0_0_8px_rgba(16,185,129,0.35)]'
+                            : 'bg-[#10B981]/15 border-[#10B981]/30'
+                        }`}>
+                          <span>{rsi1m.toFixed(2)}</span>
+                          <span className="text-[9px] uppercase opacity-90">SV</span>
+                        </span>
+                      ) : (
+                        <span className="text-text-main">{rsi1m.toFixed(2)}</span>
+                      )}
+                    </td>
                     <td className="py-2.5 px-4 text-right">
                       {isPinned ? (
                         <button 
                           className="p-1 rounded hover:bg-[rgba(255,255,255,0.1)] text-accent hover:text-white transition-colors"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setPinnedCoins(prev => prev.filter(p => p !== ticker));
+                            handleUnpinCoin(ticker);
                           }}
                           title="Desafixar cripto"
                         >
@@ -716,7 +1057,7 @@ export default function App() {
                           className="p-1 rounded hover:bg-[rgba(255,255,255,0.1)] text-text-dim/30 hover:text-accent transition-colors opacity-0 group-hover:opacity-100"
                           onClick={(e) => {
                             e.stopPropagation();
-                            setPinnedCoins(prev => [...prev, ticker]);
+                            handlePinCoin(ticker);
                           }}
                           title="Fixar no topo"
                         >
