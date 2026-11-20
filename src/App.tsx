@@ -2,7 +2,6 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceArea, ReferenceLine, Cell, ZAxis } from 'recharts';
 import { RefreshCw, TrendingUp, ChevronUp, ChevronDown, BarChart2, HelpCircle, User, X, Pin, Volume2, VolumeX } from 'lucide-react';
 import axios from 'axios';
-import { CoinHistoryModal } from './components/CoinHistoryModal';
 import { Dashboard } from './components/Dashboard';
 import { IrpfForm } from './components/IrpfForm';
 import Evolution from './components/Evolution';
@@ -237,8 +236,6 @@ export default function App() {
   };
   const [showTable, setShowTable] = useState(true);
   const [activeTab, setActiveTab] = useState<'heatmap' | 'dashboard' | 'irpf' | 'evolution' | 'risk' | 'journal' | 'strategy'>('heatmap');
-  
-  const [selectedCoin, setSelectedCoin] = useState<CryptoData | null>(null);
 
   const fetchData = async () => {
     setLoading(true);
@@ -709,19 +706,19 @@ export default function App() {
               </React.Fragment>
             )})}
 
-            <Scatter data={data} animationDuration={1000} onClick={(data) => setSelectedCoin(data.payload)}>
+            <Scatter data={data} animationDuration={1000}>
               {data.map((entry, index) => (
                 <Cell 
                   key={`cell-${index}`} 
                   fill={getZoneColor(entry.rsi)}
                   stroke="rgba(255,255,255,0.2)"
                   strokeWidth={2}
-                  className="cursor-pointer hover:opacity-80 transition-opacity"
+                  className="hover:opacity-80 transition-opacity"
                 />
               ))}
             </Scatter>
             {/* Overlay labels since Recharts built-in labels can be hard to position without overlap */}
-            <Scatter data={data} shape={<CustomLabel />} isAnimationActive={false} onClick={(data) => setSelectedCoin(data.payload)} />
+            <Scatter data={data} shape={<CustomLabel />} isAnimationActive={false} />
           </ScatterChart>
         </ResponsiveContainer>
         </div>
@@ -916,28 +913,21 @@ export default function App() {
                 const isPinned = pinnedCoins.includes(ticker);
                 const { status, signal, liveStatus1h, effective1h, status1m, rsi1h, rsi1m } = coin;
 
-                let rowClasses = "border-b border-border hover:bg-surface-light transition-all cursor-pointer group";
+                let rowClasses = "border-b border-border hover:bg-surface-light transition-all group";
                 if (status === 'LONG') {
-                  rowClasses = "border-b border-border hover:bg-surface-light border-l-4 border-l-[#10B981] bg-[#10B981]/10 transition-all cursor-pointer group";
+                  rowClasses = "border-b border-border hover:bg-surface-light border-l-4 border-l-[#10B981] bg-[#10B981]/10 transition-all group";
                 } else if (status === 'SHORT') {
-                  rowClasses = "border-b border-border hover:bg-surface-light border-l-4 border-l-[#EF4444] bg-[#EF4444]/10 transition-all cursor-pointer group";
+                  rowClasses = "border-b border-border hover:bg-surface-light border-l-4 border-l-[#EF4444] bg-[#EF4444]/10 transition-all group";
                 } else if (status === 'WAITING') {
-                  rowClasses = "border-b border-border hover:bg-surface-light border-l-4 border-l-amber-400 bg-amber-500/5 transition-all cursor-pointer group";
+                  rowClasses = "border-b border-border hover:bg-surface-light border-l-4 border-l-amber-400 bg-amber-500/5 transition-all group";
                 } else if (isPinned) {
                   rowClasses += " border-l-4 border-l-accent";
                 }
 
                 return (
-                  <tr key={`${ticker}-${coin.id || index}`} className={rowClasses} onClick={() => {
-                    if (isPinned) {
-                      handleUnpinCoin(ticker);
-                    } else {
-                      handlePinCoin(ticker);
-                    }
-                  }}>
+                  <tr key={`${ticker}-${coin.id || index}`} className={rowClasses}>
                     <td className="py-2.5 px-4 font-sans font-bold flex items-center gap-2">
                       <div className="flex items-center gap-1.5 min-w-[3.5rem]">
-                        {isPinned && <Pin size={12} className="text-accent fill-accent rotate-45 shrink-0" />}
                         <span className="text-sm font-extrabold">{ticker}</span>
                       </div>
                       <span className="text-xs text-text-dim font-normal truncate max-w-[120px] hidden sm:inline">
@@ -1043,12 +1033,9 @@ export default function App() {
                     <td className="py-2.5 px-4 text-right">
                       {isPinned ? (
                         <button 
-                          className="p-1 rounded hover:bg-[rgba(255,255,255,0.1)] text-accent hover:text-white transition-colors"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleUnpinCoin(ticker);
-                          }}
-                          title="Desafixar cripto"
+                          className="p-1 rounded hover:bg-[rgba(255,255,255,0.1)] text-accent hover:text-white transition-colors cursor-pointer"
+                          onClick={() => handleUnpinCoin(ticker)}
+                          title="Remover da lista"
                         >
                           <X className="w-4 h-4" />
                         </button>
@@ -1080,13 +1067,6 @@ export default function App() {
         {lastUpdated && <p>Last updated: <span className="text-accent">{lastUpdated.toLocaleTimeString()}</span></p>}
       </footer>
       </main>
-      
-      {selectedCoin && (
-        <CoinHistoryModal 
-          coin={selectedCoin} 
-          onClose={() => setSelectedCoin(null)} 
-        />
-      )}
       </>
       ) : activeTab === 'dashboard' ? (
         <Dashboard />
